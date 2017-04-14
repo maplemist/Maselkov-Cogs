@@ -658,8 +658,7 @@ class GuildWars2:
             key = self.keylist[user.id]["key"]
             endpoint_id = "guild/search?name={0}".format(guild)
             guild_id = await self.call_api(endpoint_id)
-            guild_id = str(guild_id).strip("['")
-            guild_id = str(guild_id).strip("']")
+            guild_id = str(guild_id).strip("['").strip("']")
             endpoint = "guild/{1}?access_token={0}".format(key, guild_id)
             results = await self.call_api(endpoint)
         except APIKeyError as e:
@@ -713,8 +712,7 @@ class GuildWars2:
                                "`{1}`".format(user, e))
             return
         guild = guild.replace('%20', ' ')
-        result = str(result).strip("['")
-        result = str(result).strip("']")
+        result = str(result).strip("['").strip("']")
 
         await self.bot.say('ID of the guild {0} is: {1}'.format(guild, result))
 
@@ -731,8 +729,7 @@ class GuildWars2:
             key = self.keylist[user.id]["key"]
             endpoint_id = "guild/search?name={0}".format(guild)
             guild_id = await self.call_api(endpoint_id)
-            guild_id = str(guild_id).strip("['")
-            guild_id = str(guild_id).strip("']")
+            guild_id = str(guild_id).strip("['").strip("']")
             endpoint = "guild/{1}/members?access_token={0}".format(
                 key, guild_id)
             endpoint_ranks = "guild/{1}/ranks?access_token={0}".format(
@@ -792,8 +789,7 @@ class GuildWars2:
             key = self.keylist[user.id]["key"]
             endpoint_id = "guild/search?name={0}".format(guild)
             guild_id = await self.call_api(endpoint_id)
-            guild_id = str(guild_id).strip("['")
-            guild_id = str(guild_id).strip("']")
+            guild_id = str(guild_id).strip("['").strip("']")
             endpoint = "guild/{1}/treasury?access_token={0}".format(
                 key, guild_id)
             treasury = await self.call_api(endpoint)
@@ -1366,21 +1362,14 @@ class GuildWars2:
         else:
             return "{0} gold, {1} silver and {2} copper".format(gold, silver, copper)
 
+
     def getlanguage(self, ctx):
         server = ctx.message.server
 
         with open('data/guildwars2/language.json') as langfile:
             data = json.load(langfile)
         # Direct messages to bot defaults to english
-        if server is None:
-            language = "en"
-        else:
-            # Default value if no language set
-            if server.id in data:
-                language = data[server.id]["language"]
-            else:
-                language = "en"
-        return language
+        return data[server.id]["language"] if server != None and server.id in data else "en"
 
 
     async def getworldid(self, world):
