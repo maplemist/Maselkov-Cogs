@@ -84,7 +84,7 @@ class GuildWars2:
         try:
             results = await self.call_api(endpoint, headers)
         except APIError as e:
-            await self.bot.say("{0.mention}, {1}. {2}".format(user, e, output))
+            await self.bot.say("{0.mention}, {1}. {2}".format(user, "invalid key", output))
             return
         endpoint = "account"
         try:
@@ -324,7 +324,7 @@ class GuildWars2:
         """
         user = ctx.message.author
         scopes = ["characters"]
-        endpoint = "characters"
+        endpoint = "characters?page=0"
         keydoc = await self.fetch_key(user)
         try:
             await self._check_scopes_(ctx, user, scopes)
@@ -340,7 +340,7 @@ class GuildWars2:
             return
         output = "{0.mention}, your characters: ```"
         for x in results:
-            output += "\n" + x
+            output += "\n" + x["name"] + " (" + x["profession"] + ")"
         output += "```"
         await self.bot.say(output.format(user))
 
@@ -796,7 +796,7 @@ class GuildWars2:
         item_id = ""
         itemlist = []
         for item in treasury:
-            res = await self.db.items.find({"_id": item["item_id"]})
+            res = await self.db.items.find_one({"_id": item["item_id"]})
             itemlist.append(res)
         # Collect amounts
         if treasury:
@@ -1131,6 +1131,7 @@ class GuildWars2:
             return
         search = "+".join(search)
         wiki = "http://wiki.guildwars2.com/"
+        wiki_ = "http://wiki.guildwars2.com"
         search = search.replace(" ", "+")
         user = ctx.message.author
         url = wiki + \
@@ -1143,7 +1144,7 @@ class GuildWars2:
             div = soup.find("div", {"class": "mw-search-result-heading"})
             a = div.find('a')
             link = a['href']
-            await self.bot.say("{0.mention}: {1}{2}".format(user, wiki, link))
+            await self.bot.say("{0.mention}: {1}{2}".format(user, wiki_, link))
         except:
             await self.bot.say("{0.mention}, no results found".format(user))
 
@@ -1336,7 +1337,7 @@ class GuildWars2:
             await self.bot.say("{0.mention}, API has responded with the following error: "
                                "`{1}`".format(user, e))
             return
-        search = re.compile(item + ".*", re.IGNORECASE)
+        search = re.compile(re.escape(item) + ".*", re.IGNORECASE)
         cursor = self.db.items.find({"name": search})
         number = await cursor.count()
         if not number:
