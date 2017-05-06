@@ -62,5 +62,14 @@
     "mursaat_overseer" :  { "name" : "Mursaat Overseer", "order" : 12 },
     "samarog" :  { "name" : "Samarog", "order" : 13 },
     "deimos" :  { "name" : "Deimos", "order" : 14 }
-  }
+  },
+    "pact_supply" : [
+      "[&BA8CAAA=][&BKYBAAA=][&BEwDAAA=][&BIcHAAA=][&BNIEAAA=][&BIMCAAA=]",
+      "[&BIMBAAA=][&BBkAAAA=][&BEgAAAA=][&BH8HAAA=][&BKgCAAA=][&BGQCAAA=]",
+      "[&BPEBAAA=][&BKYAAAA=][&BMIBAAA=][&BH4HAAA=][&BP0CAAA=][&BDgDAAA=]",
+      "[&BOcBAAA=][&BIMAAAA=][&BF0AAAA=][&BKsHAAA=][&BO4CAAA=][&BF0GAAA=]",
+      "[&BNMAAAA=][&BNUGAAA=][&BMwCAAA=][&BJQHAAA=][&BJsCAAA=][&BHsBAAA=]",
+      "[&BBABAAA=][&BJIBAAA=][&BLkCAAA=][&BH8HAAA=][&BBEDAAA=][&BEICAAA=]",
+      "[&BCECAAA=][&BC0AAAA=][&BDoBAAA=][&BIkHAAA=][&BO4CAAA=][&BIUCAAA=]"
+    ]
 }

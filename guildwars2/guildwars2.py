@@ -52,6 +52,7 @@ class GuildWars2:
         self.session.close()
         self.client.close()
 
+
     @commands.group(pass_context=True)
     async def key(self, ctx):
         """Commands related to API keys"""
@@ -70,6 +71,7 @@ class GuildWars2:
             has_permissions = False
         else:
             has_permissions = channel.permissions_for(server.me).manage_messages
+
         if has_permissions:
             await self.bot.delete_message(ctx.message)
             output = "Your message was removed for privacy"
@@ -84,22 +86,20 @@ class GuildWars2:
         try:
             results = await self.call_api(endpoint, headers)
         except APIError as e:
-            await self.bot.say("{0.mention}, {1}. {2}".format(user, e, output))
+            await self.bot.say("{0.mention}, {1}. {2}".format(user, "invalid key", output))
             return
         endpoint = "account"
         try:
             acc = await self.call_api(endpoint, headers)
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
             return
         name = results["name"]
         if not name:
             name = None  # Else embed fails
-        keydoc = {
-            "key": key, "_id": user.id, "account_name": acc["name"], "name": name, "permissions": results["permissions"]}
-        await self.bot.say("{0.mention}, your api key was verified and "
-                           "added to the list. {1}".format(user, output))
+        keydoc = {"key": key, "_id": user.id, "account_name": acc["name"], "name": name,
+                  "permissions": results["permissions"]}
+        await self.bot.say("{0.mention}, your api key was verified and added to the list. {1}".format(user, output))
         await self.db.keys.insert_one(keydoc)
 
     @commands.cooldown(1, 10, BucketType.user)
@@ -110,10 +110,10 @@ class GuildWars2:
         keydoc = await self.fetch_key(user)
         if keydoc:
             await self.db.keys.delete_one({"_id": user.id})
-            await self.bot.say("{0.mention}, sucessfuly removed your key. "
-                               "You may input a new one.".format(user))
+            await self.bot.say("{0.mention}, sucessfuly removed your key. You may input a new one.".format(user))
         else:
-            await self.bot.say("{0.mention}, no API key associated with your account. Add your key using `{1}key add` command.".format(user, ctx.prefix))
+            await self.bot.say("{0.mention}, no API key associated with your account. Add your key using "
+                               "`{1}key add` command.".format(user, ctx.prefix))
 
     @commands.cooldown(1, 10, BucketType.user)
     @key.command(pass_context=True, name="info")
@@ -137,8 +137,7 @@ class GuildWars2:
             await self.bot.say("Invalid character name")
             return
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
             return
         accountname = results["name"]
         keyname = keydoc["name"]
@@ -154,6 +153,7 @@ class GuildWars2:
             await self.bot.say(embed=data)
         except discord.HTTPException:
             await self.bot.say("Need permission to embed links")
+
 
     @commands.cooldown(1, 10, BucketType.user)
     @commands.command(pass_context=True)
@@ -174,8 +174,7 @@ class GuildWars2:
             await self.bot.say(e)
             return
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
             return
         accountname = keydoc["account_name"]
         created = results["created"].split("T", 1)[0]
@@ -183,21 +182,17 @@ class GuildWars2:
         color = self.getColor(user)
         data = discord.Embed(description=None, colour=color)
         data.add_field(name="Created account on", value=created)
-        data.add_field(name="Has commander tag",
-                       value=hascommander, inline=False)
+        data.add_field(name="Has commander tag", value=hascommander, inline=False)
         if "fractal_level" in results:
-            fractallevel = results["fractal_level"]
-            data.add_field(name="Fractal level", value=fractallevel)
+            data.add_field(name="Fractal level", value=results["fractal_level"])
         if "wvw_rank" in results:
-            wvwrank = results["wvw_rank"]
-            data.add_field(name="WvW rank", value=wvwrank)
+            data.add_field(name="WvW rank", value=results["wvw_rank"])
         if "pvp" in keydoc["permissions"]:
             endpoint = "pvp/stats"
             try:
                 pvp = await self.call_api(endpoint, headers)
             except APIError as e:
-                await self.bot.say("{0.mention}, API has responded with the following error: "
-                                   "`{1}`".format(user, e))
+                await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
                 return
             pvprank = pvp["pvp_rank"] + pvp["pvp_rank_rollovers"]
             data.add_field(name="PVP rank", value=pvprank)
@@ -206,6 +201,7 @@ class GuildWars2:
             await self.bot.say(embed=data)
         except discord.HTTPException:
             await self.bot.say("Need permission to embed links")
+
 
     @commands.cooldown(1, 60, BucketType.user)
     @commands.command(pass_context=True)
@@ -231,22 +227,19 @@ class GuildWars2:
             await self.bot.say(e)
             return
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
             return
 
-        bank = [item["count"]
-                for item in bank if item != None and item["id"] == 77302]
-        shared = [item["count"]
-                  for item in shared if item != None and item["id"] == 77302]
+        bank = [item["count"] for item in bank if item != None and item["id"] == 77302]
+        shared = [item["count"] for item in shared if item != None and item["id"] == 77302]
         li = sum(bank) + sum(shared)
         for character in characters:
             bags = [bag for bag in character["bags"] if bag != None]
             for bag in bags:
-                inv = [item["count"] for item in bag["inventory"]
-                       if item != None and item["id"] == 77302]
+                inv = [item["count"] for item in bag["inventory"] if item != None and item["id"] == 77302]
                 li += sum(inv)
         await self.bot.edit_message(msg, "{0.mention}, you have {1} legendary insights".format(user, li))
+
 
     @commands.group(pass_context=True)
     async def character(self, ctx):
@@ -278,8 +271,7 @@ class GuildWars2:
             await self.bot.say(e)
             return
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
             return
         accountname = keydoc["account_name"]
         age = self.get_age(results["age"])
@@ -324,7 +316,7 @@ class GuildWars2:
         """
         user = ctx.message.author
         scopes = ["characters"]
-        endpoint = "characters"
+        endpoint = "characters?page=0"
         keydoc = await self.fetch_key(user)
         try:
             await self._check_scopes_(ctx, user, scopes)
@@ -335,12 +327,11 @@ class GuildWars2:
             await self.bot.say(e)
             return
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
             return
         output = "{0.mention}, your characters: ```"
         for x in results:
-            output += "\n" + x
+            output += "\n" + x["name"] + " (" + x["profession"] + ")"
         output += "```"
         await self.bot.say(output.format(user))
 
@@ -369,15 +360,13 @@ class GuildWars2:
             await self.bot.say("Invalid character name".format(user))
             return
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
         eq = results["equipment"]
         gear = {}
         pieces = ["Helm", "Shoulders", "Coat", "Gloves", "Leggings", "Boots", "Ring1", "Ring2", "Amulet",
                   "Accessory1", "Accessory2", "Backpack", "WeaponA1", "WeaponA2", "WeaponB1", "WeaponB2"]
         for piece in pieces:
-            gear[piece] = {"id": None, "upgrades": [], "infusions": [],
-                           "stat": None, "name": None}
+            gear[piece] = {"id": None, "upgrades": [], "infusions": [], "stat": None, "name": None}
         for item in eq:
             for piece in pieces:
                 if item["slot"] == piece:
@@ -413,15 +402,14 @@ class GuildWars2:
                 msg = "\n".join(upgrade + infusion)
                 if not msg:
                     msg = "---"
-                data.add_field(name="{0} {1} [{2}]".format(
-                    statname, itemname, piece), value=msg, inline=False)
+                data.add_field(name="{0} {1} [{2}]".format(statname, itemname, piece), value=msg, inline=False)
         data.set_author(name=character)
-        data.set_footer(text="A level {0} {1} ".format(
-            level, profession.lower()), icon_url=icon)
+        data.set_footer(text="A level {0} {1} ".format(level, profession.lower()), icon_url=icon)
         try:
             await self.bot.say(embed=data)
         except discord.HTTPException as e:
             await self.bot.say("Need permission to embed links")
+
 
     @commands.group(pass_context=True)
     async def wallet(self, ctx):
@@ -441,8 +429,7 @@ class GuildWars2:
         async for x in cursor:
             results.append(x)
         currlist = [currency["name"] for currency in results]
-        output = "Available currencies are: ```"
-        output += ", ".join(currlist) + "```"
+        output = "Available currencies are: ```" +  ", ".join(currlist) + "```"
         await self.bot.say(output)
 
     @commands.cooldown(1, 5, BucketType.user)
@@ -510,8 +497,7 @@ class GuildWars2:
             await self.bot.say(e)
             return
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
             return
         wallet = [{"count": 0, "id": 1, "name": "Gold"},
                   {"count": 0, "id": 4, "name": "Gems"},
@@ -562,8 +548,7 @@ class GuildWars2:
             await self.bot.say(e)
             return
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
             return
         wallet = [{"count": 0, "id": 5, "name": "Ascalonian Tears"},
                   {"count": 0, "id": 6, "name": "Shards of Zhaitan"},
@@ -613,8 +598,7 @@ class GuildWars2:
             await self.bot.say(e)
             return
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
             return
         wallet = [{"count": 0, "id": 25, "name": "Geodes"},
                   {"count": 0, "id": 27, "name": "Bandit Crests"},
@@ -636,6 +620,7 @@ class GuildWars2:
             await self.bot.say(embed=data)
         except discord.HTTPException:
             await self.bot.say("Need permission to embed links")
+
 
     @commands.group(pass_context=True)
     async def guild(self, ctx):
@@ -663,8 +648,7 @@ class GuildWars2:
             key = keydoc["key"]
             headers = self.construct_headers(key)
             guild_id = await self.call_api(endpoint_id)
-            guild_id = str(guild_id).strip("['")
-            guild_id = str(guild_id).strip("']")
+            guild_id = str(guild_id).strip("['").strip("']")
             endpoint = "guild/{0}".format(guild_id)
             results = await self.call_api(endpoint, headers)
         except APIKeyError as e:
@@ -684,15 +668,13 @@ class GuildWars2:
         resonance = results["resonance"]
         favor = results["favor"]
         member_count = results["member_count"]
-        data = discord.Embed(
-            description='General Info about your guild', colour=color)
+        data = discord.Embed(description='General Info about your guild', colour=color)
         data.set_author(name=name + " [" + tag + "]")
         data.add_field(name='Influence', value=influence, inline=True)
         data.add_field(name='Aetherium', value=aetherium, inline=True)
         data.add_field(name='Resonance', value=resonance, inline=True)
         data.add_field(name='Favor', value=favor, inline=True)
-        data.add_field(name='Members', value=str(
-            member_count) + "/" + str(member_cap), inline=True)
+        data.add_field(name='Members', value=str(member_count) + "/" + str(member_cap), inline=True)
         data.add_field(name='Message of the day:', value=motd, inline=False)
         data.set_footer(text='A level {0} guild'.format(level))
         try:
@@ -716,8 +698,7 @@ class GuildWars2:
             key = keydoc["key"]
             headers = self.construct_headers(key)
             guild_id = await self.call_api(endpoint_id)
-            guild_id = str(guild_id).strip("['")
-            guild_id = str(guild_id).strip("']")
+            guild_id = str(guild_id).strip("['").strip("']")
             endpoint = "guild/{0}/members".format(guild_id)
             endpoint_ranks = "guild/{0}/ranks".format(guild_id)
             ranks = await self.call_api(endpoint_ranks, headers)
@@ -726,8 +707,7 @@ class GuildWars2:
             await self.bot.say(e)
             return
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
             return
         guild = guild.replace('%20', ' ')
         data = discord.Embed(description='Members of {0}'.format(
@@ -750,8 +730,7 @@ class GuildWars2:
                             # + str(rank['order']))
                             if rank['order'] == order_id:
                                 if counter < 20:
-                                    data.add_field(
-                                        name=member['name'], value=member['rank'])
+                                    data.add_field(name=member['name'], value=member['rank'])
                                     counter += 1
             order_id += 1
         try:
@@ -775,20 +754,17 @@ class GuildWars2:
             key = keydoc["key"]
             headers = self.construct_headers(key)
             guild_id = await self.call_api(endpoint_id)
-            guild_id = str(guild_id).strip("['")
-            guild_id = str(guild_id).strip("']")
+            guild_id = str(guild_id).strip("['").strip("']")
             endpoint = "guild/{0}/treasury".format(guild_id)
             treasury = await self.call_api(endpoint, headers)
         except APIKeyError as e:
             await self.bot.say(e)
             return
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
             return
         guild = guild.replace('%20', ' ')
-        data = discord.Embed(description='Treasury contents of {0}'.format(
-            guild.title()), colour=color)
+        data = discord.Embed(description='Treasury contents of {0}'.format(guild.title()), colour=color)
         data.set_author(name=guild.title())
         counter = 0
         item_counter = 0
@@ -796,7 +772,7 @@ class GuildWars2:
         item_id = ""
         itemlist = []
         for item in treasury:
-            res = await self.db.items.find({"_id": item["item_id"]})
+            res = await self.db.items.find_one({"_id": item["item_id"]})
             itemlist.append(res)
         # Collect amounts
         if treasury:
@@ -808,8 +784,7 @@ class GuildWars2:
                     for need in needed:
                         amount = amount + need["count"]
                     if amount != current:
-                        data.add_field(name=item_name, value=str(
-                            current) + "/" + str(amount), inline=True)
+                        data.add_field(name=item_name, value=str(current) + "/" + str(amount), inline=True)
                         counter += 1
                     amount = 0
                     item_counter += 1
@@ -820,6 +795,7 @@ class GuildWars2:
             await self.bot.say(embed=data)
         except discord.HTTPException:
             await self.bot.say("Need permission to embed links")
+
 
     @commands.group(pass_context=True)
     async def pvp(self, ctx):
@@ -848,8 +824,7 @@ class GuildWars2:
             await self.bot.say(e)
             return
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
             return
         accountname = keydoc["account_name"]
         pvprank = results["pvp_rank"] + results["pvp_rank_rollovers"]
@@ -860,8 +835,7 @@ class GuildWars2:
         else:
             totalwinratio = 0
         rankedgamesplayed = sum(results["ladders"]["ranked"].values())
-        rankedwins = results["ladders"]["ranked"]["wins"] + \
-            results["ladders"]["ranked"]["byes"]
+        rankedwins = results["ladders"]["ranked"]["wins"] + results["ladders"]["ranked"]["byes"]
         if rankedgamesplayed != 0:
             rankedwinratio = int((rankedwins / rankedgamesplayed) * 100)
         else:
@@ -871,8 +845,7 @@ class GuildWars2:
         try:
             rank = await self.call_api(endpoint_ranks)
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
             return
         rank_icon = rank["icon"]
         color = self.getColor(user)
@@ -880,12 +853,10 @@ class GuildWars2:
         data.add_field(name="Rank", value=pvprank, inline=False)
         data.add_field(name="Total games played", value=totalgamesplayed)
         data.add_field(name="Total wins", value=totalwins)
-        data.add_field(name="Total winratio",
-                       value="{}%".format(totalwinratio))
+        data.add_field(name="Total winratio", value="{}%".format(totalwinratio))
         data.add_field(name="Ranked games played", value=rankedgamesplayed)
         data.add_field(name="Ranked wins", value=rankedwins)
-        data.add_field(name="Ranked winratio",
-                       value="{}%".format(rankedwinratio))
+        data.add_field(name="Ranked winratio", value="{}%".format(rankedwinratio))
         data.set_author(name=accountname)
         data.set_thumbnail(url=rank_icon)
         try:
@@ -914,33 +885,30 @@ class GuildWars2:
             await self.bot.say(e)
             return
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
             return
         accountname = keydoc["account_name"]
         professions = self.gamedata["professions"].keys()
         if not profession:
             for profession in professions:
                 if profession in results["professions"]:
-                    wins = results["professions"][profession]["wins"] + \
-                        results["professions"][profession]["byes"]
+                    wins = results["professions"][profession]["wins"] + results["professions"][profession]["byes"]
                     total = sum(results["professions"][profession].values())
                     winratio = int((wins / total) * 100)
-                    professionsformat[profession] = {
-                        "wins": wins, "total": total, "winratio": winratio}
-            mostplayed = max(professionsformat,
-                             key=lambda i: professionsformat[i]['total'])
+                    professionsformat[profession] = {"wins": wins, "total": total, "winratio": winratio}
+            mostplayed = max(professionsformat, key=lambda i: professionsformat[i]['total'])
             icon = self.gamedata["professions"][mostplayed]["icon"]
             mostplayedgames = professionsformat[mostplayed]["total"]
-            highestwinrate = max(
-                professionsformat, key=lambda i: professionsformat[i]["winratio"])
+
+            highestwinrate = max(professionsformat, key=lambda i: professionsformat[i]["winratio"])
             highestwinrategames = professionsformat[highestwinrate]["winratio"]
-            leastplayed = min(professionsformat,
-                              key=lambda i: professionsformat[i]["total"])
+
+            leastplayed = min(professionsformat, key=lambda i: professionsformat[i]["total"])
             leastplayedgames = professionsformat[leastplayed]["total"]
-            lowestestwinrate = min(
-                professionsformat, key=lambda i: professionsformat[i]["winratio"])
+
+            lowestestwinrate = min(professionsformat, key=lambda i: professionsformat[i]["winratio"])
             lowestwinrategames = professionsformat[lowestestwinrate]["winratio"]
+
             color = self.getColor(user)
             data = discord.Embed(description="Professions", colour=color)
             data.set_thumbnail(url=icon)
@@ -963,20 +931,16 @@ class GuildWars2:
             await self.bot.say("You haven't played that profession!")
         else:
             prof = profession.lower()
-            wins = results["professions"][prof]["wins"] + \
-                results["professions"][prof]["byes"]
+            wins = results["professions"][prof]["wins"] + results["professions"][prof]["byes"]
             total = sum(results["professions"][prof].values())
             winratio = int((wins / total) * 100)
             color = self.gamedata["professions"][prof]["color"]
             color = int(color, 0)
-            data = discord.Embed(
-                description="Stats for {0}".format(prof), colour=color)
+            data = discord.Embed(description="Stats for {0}".format(prof), colour=color)
             data.set_thumbnail(url=self.gamedata["professions"][prof]["icon"])
-            data.add_field(name="Total games played",
-                           value="{0}".format(total))
+            data.add_field(name="Total games played", value="{0}".format(total))
             data.add_field(name="Wins", value="{0}".format(wins))
-            data.add_field(name="Winratio",
-                           value="{0}%".format(winratio))
+            data.add_field(name="Winratio", value="{0}%".format(winratio))
             data.set_author(name=accountname)
             try:
                 await self.bot.say(embed=data)
@@ -1002,27 +966,24 @@ class GuildWars2:
             await self.bot.say(e)
             return
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
             return
         else:
-            newbosslist = list(
-                set(list(self.gamedata["bosses"])) ^ set(results))
+            newbosslist = list(set(list(self.gamedata["bosses"])) ^ set(results))
             if not newbosslist:
                 await self.bot.say("Congratulations {0.mention}, "
-                                   "you've cleared everything. Here's a gold star: "
-                                   ":star:".format(user))
+                                   "you've cleared everything. Here's a gold star: :star:".format(user))
             else:
                 formattedlist = []
                 output = "{0.mention}, you haven't killed the following bosses this week: ```"
-                newbosslist.sort(
-                    key=lambda val: self.gamedata["bosses"][val]["order"])
+                newbosslist.sort(key=lambda val: self.gamedata["bosses"][val]["order"])
                 for boss in newbosslist:
                     formattedlist.append(self.gamedata["bosses"][boss]["name"])
                 for x in formattedlist:
                     output += "\n" + x
                 output += "```"
                 await self.bot.say(output.format(user))
+
 
     @commands.group(pass_context=True)
     async def wvw(self, ctx):
@@ -1040,8 +1001,7 @@ class GuildWars2:
             endpoint = "worlds?ids=all"
             results = await self.call_api(endpoint)
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
             return
         output = "Available worlds are: ```"
         for world in results:
@@ -1064,8 +1024,7 @@ class GuildWars2:
                 results = await self.call_api(endpoint, headers)
                 wid = results["world"]
             except APIError as e:
-                await self.bot.say("{0.mention}, API has responded with the following error: "
-                                   "`{1}`".format(user, e))
+                await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
                 return
         else:
             wid = await self.getworldid(world)
@@ -1080,8 +1039,7 @@ class GuildWars2:
             worldname = worldinfo["name"]
             population = worldinfo["population"]
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
             return
         worldcolor = ""
         for key, value in results["all_worlds"].items():
@@ -1120,6 +1078,7 @@ class GuildWars2:
         except discord.HTTPException:
             await self.bot.say("Need permission to embed links")
 
+
     @commands.command(pass_context=True)
     async def gw2wiki(self, ctx, *search):
         """Search the guild wars 2 wiki
@@ -1129,13 +1088,10 @@ class GuildWars2:
             await self.bot.say("BeautifulSoup needs to be installed "
                                "for this command to work.")
             return
-        search = "+".join(search)
-        wiki = "http://wiki.guildwars2.com/"
-        search = search.replace(" ", "+")
+        search = "+".join(search).replace(" ", "+")
+        wiki = "http://wiki.guildwars2.com"
         user = ctx.message.author
-        url = wiki + \
-            "index.php?title=Special%3ASearch&profile=default&fulltext=Search&search={0}".format(
-                search)
+        url = wiki + "/index.php?title=Special%3ASearch&profile=default&fulltext=Search&search={0}".format(search)
         async with self.session.get(url) as r:
             results = await r.text()
             soup = BeautifulSoup(results, 'html.parser')
@@ -1146,6 +1102,7 @@ class GuildWars2:
             await self.bot.say("{0.mention}: {1}{2}".format(user, wiki, link))
         except:
             await self.bot.say("{0.mention}, no results found".format(user))
+
 
     @commands.cooldown(1, 7, BucketType.user)
     @commands.command(pass_context=True)
@@ -1172,22 +1129,22 @@ class GuildWars2:
             await self.bot.say("Invalid type of daily")
             return
         dailies = []
+        daily_filtered = []
         for x in data:
             if x["level"]["max"] == 80:
-                dailies.append(str(x["id"]))
-        dailies = ",".join(dailies)
-        try:
-            endpoint = "achievements?ids={0}".format(dailies)
-            results = await self.call_api(endpoint)
-        except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
-            return
+                dailies.append(x["id"])
+        for daily in dailies:
+            d = await self.db.achievements.find_one({"_id": daily})
+            daily_filtered.append(d)
+        if search == "fractals":
+            daily_filtered = [d for d in daily_filtered if "Recommended" in d["name"] or "Tier 4" in d["name"]]
+            daily_filtered = sorted(daily_filtered, key=lambda x: x["name"])
         output = "{0} dailes for today are: ```".format(search.capitalize())
-        for x in results:
+        for x in daily_filtered:
             output += "\n" + x["name"]
         output += "```"
         await self.bot.say(output)
+
 
     @commands.group(pass_context=True, no_pm=True, name="updatenotifier")
     @checks.admin_or_permissions(manage_server=True)
@@ -1197,8 +1154,7 @@ class GuildWars2:
         serverdoc = await self.fetch_server(server)
         if not serverdoc:
             default_channel = server.default_channel.id
-            serverdoc = {"_id": server.id, "on": False,
-                         "channel": default_channel, "language": "en"}
+            serverdoc = {"_id": server.id, "on": False, "channel": default_channel, "language": "en"}
             await self.db.settings.insert_one(serverdoc)
         if ctx.invoked_subcommand is None:
             await self.bot.send_cmd_help(ctx)
@@ -1210,15 +1166,12 @@ class GuildWars2:
         server = ctx.message.server
         if channel is None:
             channel = ctx.message.server.default_channel
-        if not server.get_member(self.bot.user.id
-                                 ).permissions_in(channel).send_messages:
-            await self.bot.say("I do not have permissions to send "
-                               "messages to {0.mention}".format(channel))
+        if not server.get_member(self.bot.user.id).permissions_in(channel).send_messages:
+            await self.bot.say("I do not have permissions to send messages to {0.mention}".format(channel))
             return
         await self.db.settings.update_one({"_id": server.id}, {"$set": {"channel": channel.id}})
         channel = await self.get_announcement_channel(server)
-        await self.bot.send_message(channel, "I will now send build announcement "
-                                    "messages to {0.mention}".format(channel))
+        await self.bot.send_message(channel, "I will now send build announcement messages to {0.mention}".format(channel))
 
     @checks.mod_or_permissions(administrator=True)
     @gamebuild.command(pass_context=True)
@@ -1231,8 +1184,8 @@ class GuildWars2:
         if serverdoc["on"]:
             await self.bot.say("I will notify you on this server about new builds")
         else:
-            await self.bot.say("I will not send "
-                               "notifications about new builds")
+            await self.bot.say("I will not send notifications about new builds")
+
 
     @commands.group(pass_context=True)
     async def tp(self, ctx):
@@ -1263,8 +1216,7 @@ class GuildWars2:
                 await self.bot.say(e)
                 return
             except APIError as e:
-                await self.bot.say("{0.mention}, API has responded with the following error: "
-                                   "`{1}`".format(user, e))
+                await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
                 return
         else:
             await self.bot.say("{0.mention}, Please us either 'sells' or 'buys' as parameter".format(user))
@@ -1292,8 +1244,7 @@ class GuildWars2:
         try:
             listings = await self.call_api(endpoint_listing)
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
             return
         for result in results:
             # Store data about transaction
@@ -1309,6 +1260,7 @@ class GuildWars2:
             await self.bot.say(embed=data)
         except discord.HTTPException:
             await self.bot.say("Need permission to embed links")
+
 
     @commands.cooldown(1, 15, BucketType.user)
     @commands.command(pass_context=True)
@@ -1333,10 +1285,9 @@ class GuildWars2:
             await self.bot.say(e)
             return
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, API has responded with the following error: `{1}`".format(user, e))
             return
-        search = re.compile(item + ".*", re.IGNORECASE)
+        search = re.compile(re.escape(item) + ".*", re.IGNORECASE)
         cursor = self.db.items.find({"name": search})
         number = await cursor.count()
         if not number:
@@ -1398,12 +1349,13 @@ class GuildWars2:
         else:
             await self.bot.edit_message(message, "```" + output + "```")
 
+
     @commands.cooldown(1, 5, BucketType.user)
     @commands.command(pass_context=True)
     async def skillinfo(self, ctx, *, skill):
         """Information about a given skill"""
         user = ctx.message.author
-        search = re.compile(skill + ".*", re.IGNORECASE)
+        search = re.compile(re.escape(skill) + ".*", re.IGNORECASE)
         cursor = self.db.skills.find({"name": search})
         number = await cursor.count()
         if not number:
@@ -1442,9 +1394,8 @@ class GuildWars2:
         except discord.HTTPException:
             await self.bot.say("Need permission to embed links")
 
-
     def skill_embed(self, skill):
-        #Very inconsistent endpoint, playing it safe
+        # Very inconsistent endpoint, playing it safe
         description = None
         if "description" in skill:
             description = skill["description"]
@@ -1473,6 +1424,7 @@ class GuildWars2:
                     pass
         return data
 
+
     @commands.group(pass_context=True)
     @checks.is_owner()
     async def database(self, ctx):
@@ -1486,6 +1438,14 @@ class GuildWars2:
         """Create a new database
         """
         await self.rebuild_database()
+
+    @database.command(pass_context=True, name="statistics")
+    async def db_stats(self, ctx):
+        """Some statistics
+        """
+        cursor = self.db.keys.find()
+        result = await cursor.count()
+        await self.bot.say("{} registered users".format(result))
 
     async def rebuild_database(self):
         # Needs a lot of cleanup, but works anyway.
