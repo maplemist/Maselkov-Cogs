@@ -1,16 +1,15 @@
 import discord
 from discord.ext import commands
-from discord.ext.commands.cooldowns import BucketType
 from .utils import checks
-from cogs.utils.dataIO import dataIO
+from cogs.utils.dataIO import dataIO, fileIO
+from __main__ import send_cmd_help
 
+
+import json
 import os
 import asyncio
 import aiohttp
-import re
-import time
 import datetime
-from motor.motor_asyncio import AsyncIOMotorClient
 
 try:
     from bs4 import BeautifulSoup
@@ -18,21 +17,12 @@ try:
 except:
     soupAvailable = False
 
-DEFAULT_HEADERS = {'User-Agent': "A GW2 Discord bot",
-                   'Accept': 'application/json'}
-
 
 class APIError(Exception):
     pass
 
 
-class APIConnectionError(APIError):
-    pass
-
-class APINotFound(APIError):
-    pass
-
-class APIKeyError(APIError):
+class APIKeyError(Exception):
     pass
 
 
@@ -41,54 +31,48 @@ class GuildWars2:
 
     def __init__(self, bot):
         self.bot = bot
-        self.client = AsyncIOMotorClient()
-        self.db = self.client['gw2']
+        self.keylist = dataIO.load_json("data/guildwars2/keys.json")
+        self.settings = dataIO.load_json("data/guildwars2/settings.json")
+        self.language = dataIO.load_json("data/guildwars2/language.json")
         self.gamedata = dataIO.load_json("data/guildwars2/gamedata.json")
         self.build = dataIO.load_json("data/guildwars2/build.json")
         self.session = aiohttp.ClientSession(loop=self.bot.loop)
-        self.user_cooldowns = {}
 
     def __unload(self):
         self.session.close()
-        self.client.close()
 
     @commands.group(pass_context=True)
     async def key(self, ctx):
         """Commands related to API keys"""
         if ctx.invoked_subcommand is None:
-            await self.bot.send_cmd_help(ctx)
+            await send_cmd_help(ctx)
             return
 
-    @commands.cooldown(1, 10, BucketType.user)
-    @key.command(pass_context=True, name="add")
-    async def key_add(self, ctx, key):
+    @key.command(pass_context=True)
+    async def add(self, ctx, key):
         """Adds your key and associates it with your discord account"""
         server = ctx.message.server
         channel = ctx.message.channel
         user = ctx.message.author
-        if server is None:
-            has_permissions = False
-        else:
-            has_permissions = channel.permissions_for(server.me).manage_messages
+        has_permissions = channel.permissions_for(server.me).manage_messages
         if has_permissions:
             await self.bot.delete_message(ctx.message)
             output = "Your message was removed for privacy"
         else:
             output = "I would've removed your message as well, but I don't have the neccesary permissions..."
-        if await self.fetch_key(user):
+        if user.id in self.keylist:
             await self.bot.say("{0.mention}, you're already on the list, "
                                "remove your key first if you wish to change it. {1}".format(user, output))
             return
-        endpoint = "tokeninfo"
-        headers = self.construct_headers(key)
+        endpoint = "tokeninfo?access_token={0}".format(key)
         try:
-            results = await self.call_api(endpoint, headers)
+            results = await self.call_api(endpoint)
         except APIError as e:
             await self.bot.say("{0.mention}, {1}. {2}".format(user, e, output))
             return
-        endpoint = "account"
+        endpoint = "account/?access_token={0}".format(key)
         try:
-            acc = await self.call_api(endpoint, headers)
+            acc = await self.call_api(endpoint)
         except APIError as e:
             await self.bot.say("{0.mention}, API has responded with the following error: "
                                "`{1}`".format(user, e))
@@ -96,53 +80,70 @@ class GuildWars2:
         name = results["name"]
         if not name:
             name = None  # Else embed fails
-        keydoc = {
-            "key": key, "_id": user.id, "account_name": acc["name"], "name": name, "permissions": results["permissions"]}
+        self.keylist[user.id] = {
+            "key": key, "account_name": acc["name"], "name": name, "permissions": results["permissions"]}
         await self.bot.say("{0.mention}, your api key was verified and "
                            "added to the list. {1}".format(user, output))
-        await self.db.keys.insert_one(keydoc)
+        self.save_keys()
 
-    @commands.cooldown(1, 10, BucketType.user)
-    @key.command(pass_context=True, name="remove")
-    async def key_remove(self, ctx):
+    @key.command(pass_context=True)
+    async def remove(self, ctx):
         """Removes your key from the list"""
         user = ctx.message.author
-        keydoc = await self.fetch_key(user)
-        if keydoc:
-            await self.db.keys.delete_one({"_id": user.id})
+        if user.id in self.keylist:
+            self.keylist.pop(user.id)
+            self.save_keys()
             await self.bot.say("{0.mention}, sucessfuly removed your key. "
                                "You may input a new one.".format(user))
         else:
-            await self.bot.say("{0.mention}, no API key associated with your account. Add your key using `{1}key add` command.".format(user, ctx.prefix))
+            await self.bot.say("{0.mention}, no API key associated with your account".format(user))
 
-    @commands.cooldown(1, 10, BucketType.user)
-    @key.command(pass_context=True, name="info")
-    async def key_info(self, ctx):
+    @key.command(hidden=True)
+    @checks.is_owner()
+    async def clear(self):
+        """Purges the key list"""
+        self.keylist = {}
+        self.save_keys()
+        await self.bot.say("Key list is now empty.")
+
+    @key.command(name='list', hidden=True)
+    @checks.is_owner()
+    async def _list(self):
+        """Lists all keys and users"""
+        if not self.keylist:
+            await self.bot.say("Keylist is empty!")
+        else:
+            msg = await self.bot.say("Calculating...")
+            readablekeys = {}
+            for key, value in self.keylist.items():
+                user = await self.bot.get_user_info(key)
+                name = user.name
+                readablekeys[name] = value
+            await self.bot.edit_message(msg,
+                                        "```{0}```".format(json.dumps(readablekeys, indent=2)))
+
+    @key.command(pass_context=True)
+    async def info(self, ctx):
         """Information about your api key
         Requires a key
         """
         user = ctx.message.author
         scopes = []
-        endpoint = "account"
-        keydoc = await self.fetch_key(user)
         try:
-            await self._check_scopes_(ctx, user, scopes)
-            key = keydoc["key"]
-            headers = self.construct_headers(key)
-            results = await self.call_api(endpoint, headers)
+            self._check_scopes_(user, scopes)
+            key = self.keylist[user.id]["key"]
+            endpoint = "account/?access_token={0}".format(key)
+            results = await self.call_api(endpoint)
         except APIKeyError as e:
             await self.bot.say(e)
-            return
-        except APINotFound:
-            await self.bot.say("Invalid character name")
             return
         except APIError as e:
             await self.bot.say("{0.mention}, API has responded with the following error: "
                                "`{1}`".format(user, e))
             return
         accountname = results["name"]
-        keyname = keydoc["name"]
-        permissions = keydoc["permissions"]
+        keyname = self.keylist[user.id]["name"]
+        permissions = self.keylist[user.id]["permissions"]
         permissions = ', '.join(permissions)
         color = self.getColor(user)
         data = discord.Embed(description=None, colour=color)
@@ -155,7 +156,23 @@ class GuildWars2:
         except discord.HTTPException:
             await self.bot.say("Need permission to embed links")
 
-    @commands.cooldown(1, 10, BucketType.user)
+    @commands.command(pass_context=True)
+    async def langset(self, ctx, lang):
+        """Set the language parameter and store it into settings file"""
+        server = ctx.message.server
+
+        if server is None:
+            await self.bot.say("That command is not available in DMs.")
+
+        else:
+            languages = ["en", "de", "es", "fr", "ko", "zh"]
+            if lang in languages:
+                await self.bot.say("Language for this server set to {0}.".format(lang))
+                self.language[server.id] = {"language": lang}
+                dataIO.save_json('data/guildwars2/language.json', self.language)
+            else:
+                await self.bot.say("ERROR: Please use one of the following parameters: en, de, es, fr, ko, zh")
+
     @commands.command(pass_context=True)
     async def account(self, ctx):
         """Information about your account
@@ -163,13 +180,11 @@ class GuildWars2:
         """
         user = ctx.message.author
         scopes = ["account"]
-        endpoint = "account"
-        keydoc = await self.fetch_key(user)
         try:
-            await self._check_scopes_(ctx, user, scopes)
-            key = keydoc["key"]
-            headers = self.construct_headers(key)
-            results = await self.call_api(endpoint, headers)
+            self._check_scopes_(user, scopes)
+            key = self.keylist[user.id]["key"]
+            endpoint = "account/?access_token={0}".format(key)
+            results = await self.call_api(endpoint)
         except APIKeyError as e:
             await self.bot.say(e)
             return
@@ -177,24 +192,23 @@ class GuildWars2:
             await self.bot.say("{0.mention}, API has responded with the following error: "
                                "`{1}`".format(user, e))
             return
-        accountname = keydoc["account_name"]
+        accountname = self.keylist[user.id]["account_name"]
         created = results["created"].split("T", 1)[0]
         hascommander = "Yes" if results["commander"] else "No"
         color = self.getColor(user)
         data = discord.Embed(description=None, colour=color)
         data.add_field(name="Created account on", value=created)
-        data.add_field(name="Has commander tag",
-                       value=hascommander, inline=False)
+        data.add_field(name="Has commander tag", value=hascommander, inline=False)
         if "fractal_level" in results:
             fractallevel = results["fractal_level"]
             data.add_field(name="Fractal level", value=fractallevel)
         if "wvw_rank" in results:
             wvwrank = results["wvw_rank"]
             data.add_field(name="WvW rank", value=wvwrank)
-        if "pvp" in keydoc["permissions"]:
-            endpoint = "pvp/stats"
+        if "pvp" in self.keylist[user.id]["permissions"]:
+            endpoint = "pvp/stats?access_token={0}".format(key)
             try:
-                pvp = await self.call_api(endpoint, headers)
+                pvp = await self.call_api(endpoint)
             except APIError as e:
                 await self.bot.say("{0.mention}, API has responded with the following error: "
                                    "`{1}`".format(user, e))
@@ -207,7 +221,6 @@ class GuildWars2:
         except discord.HTTPException:
             await self.bot.say("Need permission to embed links")
 
-    @commands.cooldown(1, 60, BucketType.user)
     @commands.command(pass_context=True)
     async def li(self, ctx):
         """Shows how many Legendary Insights you have
@@ -215,18 +228,16 @@ class GuildWars2:
         """
         user = ctx.message.author
         scopes = ["inventories", "characters"]
-        keydoc = await self.fetch_key(user)
         msg = await self.bot.say("Getting legendary insights, this might take a while...")
         try:
-            await self._check_scopes_(ctx, user, scopes)
-            key = keydoc["key"]
-            headers = self.construct_headers(key)
-            endpoint_bank = "account/bank"
-            endpoint_shared = "account/inventory"
-            endpoint_char = "characters?page=0"
-            bank = await self.call_api(endpoint_bank, headers)
-            shared = await self.call_api(endpoint_shared, headers)
-            characters = await self.call_api(endpoint_char, headers)
+            self._check_scopes_(user, scopes)
+            key = self.keylist[user.id]["key"]
+            endpoint_bank = "account/bank?access_token={0}".format(key)
+            endpoint_shared = "account/inventory?access_token={0}".format(key)
+            endpoint_char = "characters?access_token={0}".format(key)
+            bank = await self.call_api(endpoint_bank)
+            shared = await self.call_api(endpoint_shared)
+            characters = await self.call_api(endpoint_char)
         except APIKeyError as e:
             await self.bot.say(e)
             return
@@ -235,16 +246,21 @@ class GuildWars2:
                                "`{1}`".format(user, e))
             return
 
-        bank = [item["count"]
-                for item in bank if item != None and item["id"] == 77302]
-        shared = [item["count"]
-                  for item in shared if item != None and item["id"] == 77302]
+        bank = [item["count"] for item in bank if item != None and item["id"] == 77302]
+        shared = [item["count"] for item in shared if item != None and item["id"] == 77302]
         li = sum(bank) + sum(shared)
+
         for character in characters:
-            bags = [bag for bag in character["bags"] if bag != None]
+            endpoint = "characters/{0}?access_token={1}".format(character, key)
+            try:
+                char = await self.call_api(endpoint)
+            except APIError as e:
+                await self.bot.say("{0.mention}, API has responded with the following error: "
+                                   "`{1}`".format(user, e))
+                return
+            bags = [bag for bag in char["bags"] if bag != None]
             for bag in bags:
-                inv = [item["count"] for item in bag["inventory"]
-                       if item != None and item["id"] == 77302]
+                inv = [item["count"] for item in bag["inventory"] if item != None and item["id"] == 77302]
                 li += sum(inv)
         await self.bot.edit_message(msg, "{0.mention}, you have {1} legendary insights".format(user, li))
 
@@ -254,11 +270,10 @@ class GuildWars2:
         Requires key with characters scope
         """
         if ctx.invoked_subcommand is None:
-            await self.bot.send_cmd_help(ctx)
+            await send_cmd_help(ctx)
 
-    @commands.cooldown(1, 5, BucketType.user)
     @character.command(name="info", pass_context=True)
-    async def character_info(self   , ctx, *, character: str):
+    async def _info(self, ctx, *, character: str):
         """Info about the given character
         You must be the owner of given character.
         Requires a key with characters scope
@@ -267,13 +282,11 @@ class GuildWars2:
         user = ctx.message.author
         character = character.title()
         character.replace(" ", "%20")
-        endpoint = "characters/{0}".format(character)
-        keydoc = await self.fetch_key(user)
         try:
-            await self._check_scopes_(ctx, user, scopes)
-            key = keydoc["key"]
-            headers = self.construct_headers(key)
-            results = await self.call_api(endpoint, headers)
+            self._check_scopes_(user, scopes)
+            key = self.keylist[user.id]["key"]
+            endpoint = "characters/{0}?access_token={1}".format(character, key)
+            results = await self.call_api(endpoint)
         except APIKeyError as e:
             await self.bot.say(e)
             return
@@ -281,13 +294,13 @@ class GuildWars2:
             await self.bot.say("{0.mention}, API has responded with the following error: "
                                "`{1}`".format(user, e))
             return
-        accountname = keydoc["account_name"]
+        accountname = self.keylist[user.id]["account_name"]
         age = self.get_age(results["age"])
         created = results["created"].split("T", 1)[0]
         deaths = results["deaths"]
         deathsperhour = round(deaths / (results["age"] / 3600), 1)
         if "title" in results:
-            title = await self._get_title_(results["title"])
+            title = await self._get_title_(results["title"], ctx)
         else:
             title = None
         gender = results["gender"]
@@ -316,21 +329,18 @@ class GuildWars2:
         except discord.HTTPException:
             await self.bot.say("Need permission to embed links")
 
-    @commands.cooldown(1, 30, BucketType.user)
     @character.command(name="list", pass_context=True)
-    async def character_list(self, ctx):
+    async def _list_(self, ctx):
         """Lists all your characters
         Requires a key with characters scope
         """
         user = ctx.message.author
         scopes = ["characters"]
-        endpoint = "characters"
-        keydoc = await self.fetch_key(user)
         try:
-            await self._check_scopes_(ctx, user, scopes)
-            key = keydoc["key"]
-            headers = self.construct_headers(key)
-            results = await self.call_api(endpoint, headers)
+            self._check_scopes_(user, scopes)
+            key = self.keylist[user.id]["key"]
+            endpoint = "characters/?access_token={0}".format(key)
+            results = await self.call_api(endpoint)
         except APIKeyError as e:
             await self.bot.say(e)
             return
@@ -344,9 +354,8 @@ class GuildWars2:
         output += "```"
         await self.bot.say(output.format(user))
 
-    @commands.cooldown(1, 10, BucketType.user)
-    @character.command(pass_context=True, name="gear")
-    async def character_gear(self, ctx, *, character: str):
+    @character.command(pass_context=True)
+    async def gear(self, ctx, *, character: str):
         """Displays the gear of given character
         You must be the owner of given character.
         Requires a key with characters scope
@@ -355,49 +364,36 @@ class GuildWars2:
         scopes = ["characters"]
         character = character.title()
         character.replace(" ", "%20")
-        endpoint = "characters/{0}".format(character)
-        keydoc = await self.fetch_key(user)
         try:
-            await self._check_scopes_(ctx, user, scopes)
-            key = keydoc["key"]
-            headers = self.construct_headers(key)
-            results = await self.call_api(endpoint, headers)
+            self._check_scopes_(user, scopes)
+            key = self.keylist[user.id]["key"]
+            endpoint = "characters/{0}?access_token={1}".format(character, key)
+            results = await self.call_api(endpoint)
         except APIKeyError as e:
             await self.bot.say(e)
             return
-        except APINotFound:
-            await self.bot.say("Invalid character name".format(user))
-            return
         except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
+            await self.bot.say("{0.mention}, invalid character name".format(user))
+            return
         eq = results["equipment"]
         gear = {}
         pieces = ["Helm", "Shoulders", "Coat", "Gloves", "Leggings", "Boots", "Ring1", "Ring2", "Amulet",
                   "Accessory1", "Accessory2", "Backpack", "WeaponA1", "WeaponA2", "WeaponB1", "WeaponB2"]
         for piece in pieces:
-            gear[piece] = {"id": None, "upgrades": [], "infusions": [],
-                           "stat": None, "name": None}
+            gear[piece] = {"id": None, "upgrades": None, "infusions": None,
+                           "statname": None}
         for item in eq:
             for piece in pieces:
                 if item["slot"] == piece:
                     gear[piece]["id"] = item["id"]
-                    c = await self.fetch_item(item["id"])
-                    gear[piece]["name"] = c["name"]
                     if "upgrades" in item:
-                        for u in item["upgrades"]:
-                            upgrade = await self.db.items.find_one({"_id": u})
-                            gear[piece]["upgrades"].append(upgrade["name"])
+                        gear[piece]["upgrades"] = item["upgrades"]
                     if "infusions" in item:
-                        for u in item["infusions"]:
-                            infusion = await self.db.items.find_one({"_id": u})
-                            gear[piece]["infusions"].append(infusion["name"])
+                        gear[piece]["infusions"] = item["infusions"]
                     if "stats" in item:
-                        gear[piece]["stat"] = await self.fetch_statname(item["stats"]["id"])
+                        gear[piece]["statname"] = item["stats"]["id"]
                     else:
-                        thing = await self.db.items.find_one({"_id": item["id"]})
-                        statid = thing["details"]["infix_upgrade"]["id"]
-                        gear[piece]["stat"] = await self.fetch_statname(statid)
+                        gear[piece]["statname"] = await self._getstats_(gear[piece]["id"])
         profession = results["profession"]
         level = results["level"]
         color = self.gamedata["professions"][profession.lower()]["color"]
@@ -406,21 +402,30 @@ class GuildWars2:
         data = discord.Embed(description="Gear", colour=color)
         for piece in pieces:
             if gear[piece]["id"] is not None:
-                statname = gear[piece]["stat"]
-                itemname = gear[piece]["name"]
-                upgrade = self.handle_duplicates(gear[piece]["upgrades"])
-                infusion = self.handle_duplicates(gear[piece]["infusions"])
-                msg = "\n".join(upgrade + infusion)
-                if not msg:
-                    msg = "---"
-                data.add_field(name="{0} {1} [{2}]".format(
-                    statname, itemname, piece), value=msg, inline=False)
+                statname = await self._getstatname_(gear[piece]["statname"], ctx)
+                itemname = await self._get_item_name_(gear[piece]["id"], ctx)
+                if gear[piece]["upgrades"]:
+                    upgrade = await self._get_item_name_(gear[piece]["upgrades"], ctx)
+                if gear[piece]["infusions"]:
+                    infusion = await self._get_item_name_(gear[piece]["infusions"], ctx)
+                if gear[piece]["upgrades"] and not gear[piece]["infusions"]:
+                    msg = "{0} {1} with {2}".format(
+                        statname, itemname, upgrade)
+                elif gear[piece]["upgrades"] and gear[piece]["infusions"]:
+                    msg = "{0} {1} with {2} and {3}".format(
+                        statname, itemname, upgrade, infusion)
+                elif gear[piece]["infusions"] and not gear[piece]["upgrades"]:
+                    msg = "{0} {1} with {2}".format(
+                        statname, itemname, infusion)
+                elif not gear[piece]["upgrades"] and not gear[piece]["infusions"]:
+                    msg = "{0} {1}".format(statname, itemname)
+                data.add_field(name=piece, value=msg, inline=False)
         data.set_author(name=character)
         data.set_footer(text="A level {0} {1} ".format(
             level, profession.lower()), icon_url=icon)
         try:
             await self.bot.say(embed=data)
-        except discord.HTTPException as e:
+        except discord.HTTPException:
             await self.bot.say("Need permission to embed links")
 
     @commands.group(pass_context=True)
@@ -429,31 +434,35 @@ class GuildWars2:
         Require a key with the scope wallet
         """
         if ctx.invoked_subcommand is None:
-            await self.bot.send_cmd_help(ctx)
+            await send_cmd_help(ctx)
 
-    @commands.cooldown(1, 10, BucketType.user)
-    @wallet.command(pass_context=True, name="currencies")
-    async def wallet_currencies(self, ctx):
+    @wallet.command(pass_context=True)
+    async def currencies(self, ctx):
         """Returns a list of all currencies"""
         user = ctx.message.author
-        cursor = self.db.currencies.find()
-        results = []
-        async for x in cursor:
-            results.append(x)
+        try:
+            endpoint = "currencies?ids=all"
+            results = await self.call_api(endpoint)
+        except APIError as e:
+            await self.bot.say("{0.mention}, API has responded with the following error: "
+                               "`{1}`".format(user, e))
+            return
         currlist = [currency["name"] for currency in results]
         output = "Available currencies are: ```"
         output += ", ".join(currlist) + "```"
         await self.bot.say(output)
 
-    @commands.cooldown(1, 5, BucketType.user)
-    @wallet.command(pass_context=True, name="currency")
-    async def wallet_currency(self, ctx, *, currency: str):
+    @wallet.command(pass_context=True)
+    async def currency(self, ctx, *, currency: str):
         """Info about a currency. See [p]wallet currencies for list"""
         user = ctx.message.author
-        cursor = self.db.currencies.find()
-        results = []
-        async for x in cursor:
-            results.append(x)
+        try:
+            endpoint = "currencies?ids=all"
+            results = await self.call_api(endpoint)
+        except APIError as e:
+            await self.bot.say("{0.mention}, API has responded with the following error: "
+                               "`{1}`".format(user, e))
+            return
         if currency.lower() == "gold":
             currency = "coin"
         cid = None
@@ -468,13 +477,11 @@ class GuildWars2:
         color = self.getColor(user)
         data = discord.Embed(description="Currency", colour=color)
         scopes = ["wallet"]
-        endpoint = "account/wallet"
-        keydoc = await self.fetch_key(user)
         try:
-            await self._check_scopes_(ctx, user, scopes)
-            key = keydoc["key"]
-            headers = self.construct_headers(key)
-            wallet = await self.call_api(endpoint, headers)
+            self._check_scopes_(user, scopes)
+            key = self.keylist[user.id]["key"]
+            endpoint = "account/wallet?access_token={0}".format(key)
+            wallet = await self.call_api(endpoint)
             for item in wallet:
                 if item["id"] == 1 and cid == 1:
                     count = self.gold_to_coins(item["value"])
@@ -491,21 +498,18 @@ class GuildWars2:
         except discord.HTTPException:
             await self.bot.say("Need permission to embed links")
 
-    @commands.cooldown(1, 5, BucketType.user)
-    @wallet.command(pass_context=True, name="show")
-    async def wallet_show(self, ctx):
+    @wallet.command(pass_context=True)
+    async def show(self, ctx):
         """Shows most important currencies in your wallet
         Requires key with scope wallet
         """
         user = ctx.message.author
         scopes = ["wallet"]
-        endpoint = "account/wallet"
-        keydoc = await self.fetch_key(user)
         try:
-            await self._check_scopes_(ctx, user, scopes)
-            key = keydoc["key"]
-            headers = self.construct_headers(key)
-            results = await self.call_api(endpoint, headers)
+            self._check_scopes_(user, scopes)
+            key = self.keylist[user.id]["key"]
+            endpoint = "account/wallet?access_token={0}".format(key)
+            results = await self.call_api(endpoint)
         except APIKeyError as e:
             await self.bot.say(e)
             return
@@ -526,7 +530,7 @@ class GuildWars2:
             for curr in results:
                 if curr["id"] == x["id"]:
                     x["count"] = curr["value"]
-        accountname = keydoc["account_name"]
+        accountname = self.keylist[user.id]["account_name"]
         color = self.getColor(user)
         data = discord.Embed(description="Wallet", colour=color)
         for x in wallet:
@@ -543,21 +547,18 @@ class GuildWars2:
         except discord.HTTPException:
             await self.bot.say("Need permission to embed links")
 
-    @commands.cooldown(1, 5, BucketType.user)
-    @wallet.command(pass_context=True, name="tokens")
-    async def wallet_tokens(self, ctx):
+    @wallet.command(pass_context=True)
+    async def tokens(self, ctx):
         """Shows instance-specific currencies
         Requires key with scope wallet
         """
         user = ctx.message.author
         scopes = ["wallet"]
-        endpoint = "account/wallet"
-        keydoc = await self.fetch_key(user)
         try:
-            await self._check_scopes_(ctx, user, scopes)
-            key = keydoc["key"]
-            headers = self.construct_headers(key)
-            results = await self.call_api(endpoint, headers)
+            self._check_scopes_(user, scopes)
+            key = self.keylist[user.id]["key"]
+            endpoint = "account/wallet?access_token={0}".format(key)
+            results = await self.call_api(endpoint)
         except APIKeyError as e:
             await self.bot.say(e)
             return
@@ -580,7 +581,7 @@ class GuildWars2:
             for curr in results:
                 if curr["id"] == x["id"]:
                     x["count"] = curr["value"]
-        accountname = keydoc["account_name"]
+        accountname = self.keylist[user.id]["account_name"]
         color = self.getColor(user)
         data = discord.Embed(description="Tokens", colour=color)
         for x in wallet:
@@ -594,21 +595,18 @@ class GuildWars2:
         except discord.HTTPException:
             await self.bot.say("Need permission to embed links")
 
-    @commands.cooldown(1, 5, BucketType.user)
-    @wallet.command(pass_context=True, name="maps")
-    async def wallet_maps(self, ctx):
+    @wallet.command(pass_context=True)
+    async def maps(self, ctx):
         """Shows map-specific currencies
         Requires key with scope wallet
         """
         user = ctx.message.author
         scopes = ["wallet"]
-        endpoint = "account/wallet"
-        keydoc = await self.fetch_key(user)
         try:
-            await self._check_scopes_(ctx, user, scopes)
-            key = keydoc["key"]
-            headers = self.construct_headers(key)
-            results = await self.call_api(endpoint, headers)
+            self._check_scopes_(user, scopes)
+            key = self.keylist[user.id]["key"]
+            endpoint = "account/wallet?access_token={0}".format(key)
+            results = await self.call_api(endpoint)
         except APIKeyError as e:
             await self.bot.say(e)
             return
@@ -626,7 +624,7 @@ class GuildWars2:
             for curr in results:
                 if curr["id"] == x["id"]:
                     x["count"] = curr["value"]
-        accountname = keydoc["account_name"]
+        accountname = self.keylist[user.id]["account_name"]
         color = self.getColor(user)
         data = discord.Embed(description="Tokens", colour=color)
         for x in wallet:
@@ -643,11 +641,10 @@ class GuildWars2:
         Require a key with the scope guild
         """
         if ctx.invoked_subcommand is None:
-            await self.bot.send_cmd_help(ctx)
+            await send_cmd_help(ctx)
 
-    @commands.cooldown(1, 20, BucketType.user)
     @guild.command(pass_context=True, name="info")
-    async def guild_info(self, ctx, *, guild: str):
+    async def __info(self, ctx, *, guild: str):
         """Information about general guild stats
         Enter guilds name
         Requires a key with guilds scope
@@ -656,17 +653,14 @@ class GuildWars2:
         color = self.getColor(user)
         guild = guild.replace(' ', '%20')
         scopes = ["guilds"]
-        endpoint_id = "guild/search?name={0}".format(guild)
-        keydoc = await self.fetch_key(user)
         try:
-            await self._check_scopes_(ctx, user, scopes)
-            key = keydoc["key"]
-            headers = self.construct_headers(key)
+            self._check_scopes_(user, scopes)
+            key = self.keylist[user.id]["key"]
+            endpoint_id = "guild/search?name={0}".format(guild)
             guild_id = await self.call_api(endpoint_id)
-            guild_id = str(guild_id).strip("['")
-            guild_id = str(guild_id).strip("']")
-            endpoint = "guild/{0}".format(guild_id)
-            results = await self.call_api(endpoint, headers)
+            guild_id = str(guild_id).strip("['").strip("']")
+            endpoint = "guild/{1}?access_token={0}".format(key, guild_id)
+            results = await self.call_api(endpoint)
         except APIKeyError as e:
             await self.bot.say(e)
             return
@@ -695,33 +689,21 @@ class GuildWars2:
             member_count) + "/" + str(member_cap), inline=True)
         data.add_field(name='Message of the day:', value=motd, inline=False)
         data.set_footer(text='A level {0} guild'.format(level))
+
         try:
             await self.bot.say(embed=data)
         except discord.HTTPException:
             await self.bot.say("Need permission to embed links")
 
-    @commands.cooldown(1, 20, BucketType.user)
-    @guild.command(pass_context=True, name="members")
-    async def guild_members(self, ctx, *, guild: str):
-        """Get list of all members and their ranks
-        Requires key with guilds scope and also Guild Leader permissions ingame"""
+    @guild.command(name="id", pass_context=True)
+    async def _id(self, ctx, *, guild: str):
+        """Get ID of given guild's name
+        Doesn't require any keys/scopes"""
         user = ctx.message.author
-        color = self.getColor(user)
         guild = guild.replace(' ', '%20')
-        scopes = ["guilds"]
-        endpoint_id = "guild/search?name={0}".format(guild)
-        keydoc = await self.fetch_key(user)
         try:
-            await self._check_scopes_(ctx, user, scopes)
-            key = keydoc["key"]
-            headers = self.construct_headers(key)
-            guild_id = await self.call_api(endpoint_id)
-            guild_id = str(guild_id).strip("['")
-            guild_id = str(guild_id).strip("']")
-            endpoint = "guild/{0}/members".format(guild_id)
-            endpoint_ranks = "guild/{0}/ranks".format(guild_id)
-            ranks = await self.call_api(endpoint_ranks, headers)
-            results = await self.call_api(endpoint, headers)
+            endpoint = "guild/search?name={0}".format(guild)
+            result = await self.call_api(endpoint)
         except APIKeyError as e:
             await self.bot.say(e)
             return
@@ -729,6 +711,39 @@ class GuildWars2:
             await self.bot.say("{0.mention}, API has responded with the following error: "
                                "`{1}`".format(user, e))
             return
+        guild = guild.replace('%20', ' ')
+        result = str(result).strip("['").strip("']")
+
+        await self.bot.say('ID of the guild {0} is: {1}'.format(guild, result))
+
+    @guild.command(pass_context=True)
+    async def members(self, ctx, *, guild: str):
+        """Get list of all members and their ranks
+        Requires key with guilds scope and also Guild Leader permissions ingame"""
+        user = ctx.message.author
+        color = self.getColor(user)
+        guild = guild.replace(' ', '%20')
+        scopes = ["guilds"]
+        try:
+            self._check_scopes_(user, scopes)
+            key = self.keylist[user.id]["key"]
+            endpoint_id = "guild/search?name={0}".format(guild)
+            guild_id = await self.call_api(endpoint_id)
+            guild_id = str(guild_id).strip("['").strip("']")
+            endpoint = "guild/{1}/members?access_token={0}".format(
+                key, guild_id)
+            endpoint_ranks = "guild/{1}/ranks?access_token={0}".format(
+                key, guild_id)
+            ranks = await self.call_api(endpoint_ranks)
+            results = await self.call_api(endpoint)
+        except APIKeyError as e:
+            await self.bot.say(e)
+            return
+        except APIError as e:
+            await self.bot.say("{0.mention}, API has responded with the following error: "
+                               "`{1}`".format(user, e))
+            return
+
         guild = guild.replace('%20', ' ')
         data = discord.Embed(description='Members of {0}'.format(
             guild.title()), colour=color)
@@ -759,26 +774,25 @@ class GuildWars2:
         except discord.HTTPException:
             await self.bot.say("Need permission to embed links")
 
-    @commands.cooldown(1, 20, BucketType.user)
-    @guild.command(pass_context=True, name="treasury")
-    async def guild_treasury(self, ctx, *, guild: str):
+    @guild.command(pass_context=True)
+    async def treasury(self, ctx, *, guild: str):
         """Get list of current and needed items for upgrades
-           Requires key with guilds scope and also Guild Leader permissions ingame"""
+                Requires key with guilds scope and also Guild Leader permissions ingame"""
         user = ctx.message.author
         color = self.getColor(user)
         guild = guild.replace(' ', '%20')
+        language = self.getlanguage(ctx)
+
         scopes = ["guilds"]
-        endpoint_id = "guild/search?name={0}".format(guild)
-        keydoc = await self.fetch_key(user)
         try:
-            await self._check_scopes_(ctx, user, scopes)
-            key = keydoc["key"]
-            headers = self.construct_headers(key)
+            self._check_scopes_(user, scopes)
+            key = self.keylist[user.id]["key"]
+            endpoint_id = "guild/search?name={0}".format(guild)
             guild_id = await self.call_api(endpoint_id)
-            guild_id = str(guild_id).strip("['")
-            guild_id = str(guild_id).strip("']")
-            endpoint = "guild/{0}/treasury".format(guild_id)
-            treasury = await self.call_api(endpoint, headers)
+            guild_id = str(guild_id).strip("['").strip("']")
+            endpoint = "guild/{1}/treasury?access_token={0}".format(
+                key, guild_id)
+            treasury = await self.call_api(endpoint)
         except APIKeyError as e:
             await self.bot.say(e)
             return
@@ -786,18 +800,32 @@ class GuildWars2:
             await self.bot.say("{0.mention}, API has responded with the following error: "
                                "`{1}`".format(user, e))
             return
+
         guild = guild.replace('%20', ' ')
+
         data = discord.Embed(description='Treasury contents of {0}'.format(
             guild.title()), colour=color)
         data.set_author(name=guild.title())
+
         counter = 0
         item_counter = 0
         amount = 0
         item_id = ""
-        itemlist = []
+
+        # Collect listed items
         for item in treasury:
-            res = await self.db.items.find({"_id": item["item_id"]})
-            itemlist.append(res)
+            item_id += str(item["item_id"]) + ","
+
+        endpoint_items = "items?ids={0}&lang={1}".format(str(item_id),language)
+
+        # Call API once for all items
+        try:
+            itemlist = await self.call_api(endpoint_items)
+        except APIError as e:
+            await self.bot.say("{0.mention}, API has responded with the following error: "
+                               "`{1}`".format(user, e))
+            return
+
         # Collect amounts
         if treasury:
             for item in treasury:
@@ -805,17 +833,18 @@ class GuildWars2:
                     current = item["count"]
                     item_name = itemlist[item_counter]["name"]
                     needed = item["needed_by"]
+
                     for need in needed:
                         amount = amount + need["count"]
+
                     if amount != current:
-                        data.add_field(name=item_name, value=str(
-                            current) + "/" + str(amount), inline=True)
+                        data.add_field(name=item_name, value=str(current)+"/"+str(amount), inline=True)
                         counter += 1
                     amount = 0
                     item_counter += 1
         else:
             await self.bot.say("Treasury is empty!")
-            return
+
         try:
             await self.bot.say(embed=data)
         except discord.HTTPException:
@@ -827,23 +856,20 @@ class GuildWars2:
         Require a key with the scope pvp
         """
         if ctx.invoked_subcommand is None:
-            await self.bot.send_cmd_help(ctx)
+            await send_cmd_help(ctx)
 
-    @commands.cooldown(1, 20, BucketType.user)
-    @pvp.command(pass_context=True, name="stats")
-    async def pvp_stats(self, ctx):
+    @pvp.command(pass_context=True)
+    async def stats(self, ctx):
         """Information about your general pvp stats
         Requires a key with pvp scope
         """
         user = ctx.message.author
         scopes = ["pvp"]
-        endpoint = "pvp/stats"
-        keydoc = await self.fetch_key(user)
         try:
-            await self._check_scopes_(ctx, user, scopes)
-            key = keydoc["key"]
-            headers = self.construct_headers(key)
-            results = await self.call_api(endpoint, headers)
+            self._check_scopes_(user, scopes)
+            key = self.keylist[user.id]["key"]
+            endpoint = "pvp/stats?access_token={0}".format(key)
+            results = await self.call_api(endpoint)
         except APIKeyError as e:
             await self.bot.say(e)
             return
@@ -851,7 +877,7 @@ class GuildWars2:
             await self.bot.say("{0.mention}, API has responded with the following error: "
                                "`{1}`".format(user, e))
             return
-        accountname = keydoc["account_name"]
+        accountname = self.keylist[user.id]["account_name"]
         pvprank = results["pvp_rank"] + results["pvp_rank_rollovers"]
         totalgamesplayed = sum(results["aggregate"].values())
         totalwins = results["aggregate"]["wins"] + results["aggregate"]["byes"]
@@ -866,6 +892,7 @@ class GuildWars2:
             rankedwinratio = int((rankedwins / rankedgamesplayed) * 100)
         else:
             rankedwinratio = 0
+
         rank_id = results["pvp_rank"] // 10 + 1
         endpoint_ranks = "pvp/ranks/{0}".format(rank_id)
         try:
@@ -893,9 +920,8 @@ class GuildWars2:
         except discord.HTTPException:
             await self.bot.say("Need permission to embed links")
 
-    @commands.cooldown(1, 5, BucketType.user)
-    @pvp.command(pass_context=True, name="professions")
-    async def pvp_professions(self, ctx, *, profession: str=None):
+    @pvp.command(pass_context=True)
+    async def professions(self, ctx, *, profession: str=None):
         """Information about your pvp profession stats.
         If no profession is given, defaults to general profession stats.
         Example: !pvp professions elementalist
@@ -903,13 +929,11 @@ class GuildWars2:
         user = ctx.message.author
         professionsformat = {}
         scopes = ["pvp"]
-        endpoint = "pvp/stats"
-        keydoc = await self.fetch_key(user)
         try:
-            await self._check_scopes_(ctx, user, scopes)
-            key = keydoc["key"]
-            headers = self.construct_headers(key)
-            results = await self.call_api(endpoint, headers)
+            self._check_scopes_(user, scopes)
+            key = self.keylist[user.id]["key"]
+            endpoint = "pvp/stats?access_token={0}".format(key)
+            results = await self.call_api(endpoint)
         except APIKeyError as e:
             await self.bot.say(e)
             return
@@ -917,7 +941,7 @@ class GuildWars2:
             await self.bot.say("{0.mention}, API has responded with the following error: "
                                "`{1}`".format(user, e))
             return
-        accountname = keydoc["account_name"]
+        accountname = self.keylist[user.id]["account_name"]
         professions = self.gamedata["professions"].keys()
         if not profession:
             for profession in professions:
@@ -983,7 +1007,6 @@ class GuildWars2:
             except discord.HTTPException:
                 await self.bot.say("Need permission to embed links")
 
-    @commands.cooldown(1, 10, BucketType.user)
     @commands.command(pass_context=True)
     async def bosses(self, ctx):
         """Lists all the bosses you killed this week
@@ -991,13 +1014,11 @@ class GuildWars2:
         """
         user = ctx.message.author
         scopes = ["progression"]
-        endpoint = "account/raids"
-        keydoc = await self.fetch_key(user)
         try:
-            await self._check_scopes_(ctx, user, scopes)
-            key = keydoc["key"]
-            headers = self.construct_headers(key)
-            results = await self.call_api(endpoint, headers)
+            self._check_scopes_(user, scopes)
+            key = self.keylist[user.id]["key"]
+            endpoint = "account/raids/?access_token={0}".format(key)
+            results = await self.call_api(endpoint)
         except APIKeyError as e:
             await self.bot.say(e)
             return
@@ -1028,11 +1049,10 @@ class GuildWars2:
     async def wvw(self, ctx):
         """Commands related to wvw"""
         if ctx.invoked_subcommand is None:
-            await self.bot.send_cmd_help(ctx)
+            await send_cmd_help(ctx)
 
-    @commands.cooldown(1, 20, BucketType.user)
-    @wvw.command(pass_context=True, name="worlds")
-    async def wvw_worlds(self, ctx):
+    @wvw.command(pass_context=True)
+    async def worlds(self, ctx):
         """List all worlds
         """
         user = ctx.message.author
@@ -1049,19 +1069,16 @@ class GuildWars2:
         output += "```"
         await self.bot.say(output)
 
-    @commands.cooldown(1, 10, BucketType.user)
     @wvw.command(pass_context=True, name="info")
-    async def wvw_info(self, ctx, *, world: str=None):
+    async def worldinfo(self, ctx, *, world: str=None):
         """Info about a world. If none is provided, defaults to account's world
         """
         user = ctx.message.author
-        keydoc = await self.fetch_key(user)
-        if not world and keydoc:
+        if not world and user.id in self.keylist:
             try:
-                key = keydoc["key"]
-                headers = self.construct_headers(key)
-                endpoint = "account/"
-                results = await self.call_api(endpoint, headers)
+                key = self.keylist[user.id]["key"]
+                endpoint = "account/?access_token={0}".format(key)
+                results = await self.call_api(endpoint)
                 wid = results["world"]
             except APIError as e:
                 await self.bot.say("{0.mention}, API has responded with the following error: "
@@ -1147,18 +1164,11 @@ class GuildWars2:
         except:
             await self.bot.say("{0.mention}, no results found".format(user))
 
-    @commands.cooldown(1, 7, BucketType.user)
     @commands.command(pass_context=True)
-    async def daily(self, ctx, pve_pvp_wvw_fractals_psna):
-        """Show today's dailies. Use `pvp`, `pve`, `wvw`, `fractals` or `psna` for pact supply"""
+    async def daily(self, ctx, pve_pvp_wvw_fractals):
         valid_dailies = ["pvp", "wvw", "pve", "fractals"]
         user = ctx.message.author
-        search = pve_pvp_wvw_fractals_psna.lower()
-        if search == "psna":
-            chatcodes = self.gamedata["pact_supply"][datetime.datetime.utcnow().weekday()]
-            await self.bot.say("Paste this into chat for pact supply network agent "
-                               "locations: ```{0}```".format(chatcodes))
-            return
+        search = pve_pvp_wvw_fractals.lower()
         try:
             endpoint = "achievements/daily"
             results = await self.call_api(endpoint)
@@ -1166,6 +1176,7 @@ class GuildWars2:
             await self.bot.say("{0.mention}, API has responded with the following error: "
                                "`{1}`".format(user, e))
             return
+        search = pve_pvp_wvw_fractals.lower()
         if search in valid_dailies:
             data = results[search]
         else:
@@ -1189,19 +1200,17 @@ class GuildWars2:
         output += "```"
         await self.bot.say(output)
 
-    @commands.group(pass_context=True, no_pm=True, name="updatenotifier")
+    @commands.group(pass_context=True, no_pm=True)
     @checks.admin_or_permissions(manage_server=True)
     async def gamebuild(self, ctx):
-        """Commands related to setting up update notifier"""
+        """Commands related to setting up a new game build notifier"""
         server = ctx.message.server
-        serverdoc = await self.fetch_server(server)
-        if not serverdoc:
-            default_channel = server.default_channel.id
-            serverdoc = {"_id": server.id, "on": False,
-                         "channel": default_channel, "language": "en"}
-            await self.db.settings.insert_one(serverdoc)
+        if server.id not in self.settings:
+            self.settings[server.id] = {"ON": False, "CHANNEL": None}
+            self.settings[server.id]["CHANNEL"] = server.default_channel.id
+            dataIO.save_json('data/guildwars2/settings.json', self.settings)
         if ctx.invoked_subcommand is None:
-            await self.bot.send_cmd_help(ctx)
+            await send_cmd_help(ctx)
 
     @gamebuild.command(pass_context=True)
     async def channel(self, ctx, channel: discord.Channel=None):
@@ -1215,8 +1224,9 @@ class GuildWars2:
             await self.bot.say("I do not have permissions to send "
                                "messages to {0.mention}".format(channel))
             return
-        await self.db.settings.update_one({"_id": server.id}, {"$set": {"channel": channel.id}})
-        channel = await self.get_announcement_channel(server)
+        self.settings[server.id]["CHANNEL"] = channel.id
+        dataIO.save_json('data/guildwars2/settings.json', self.settings)
+        channel = self.get_announcement_channel(server)
         await self.bot.send_message(channel, "I will now send build announcement "
                                     "messages to {0.mention}".format(channel))
 
@@ -1226,39 +1236,58 @@ class GuildWars2:
         """Toggles checking for new builds"""
         server = ctx.message.server
         if on_off is not None:
-            await self.db.settings.update_one({"_id": server.id}, {"$set": {"on": on_off}})
-        serverdoc = await self.fetch_server(server)
-        if serverdoc["on"]:
+            self.settings[server.id]["ON"] = on_off
+        if self.settings[server.id]["ON"]:
             await self.bot.say("I will notify you on this server about new builds")
+            if not self.settings["ENABLED"]:
+                await self.bot.say("Build checking is globally disabled though. "
+                                   "Owner has to enable it using `[p]gamebuild globaltoggle on`")
         else:
             await self.bot.say("I will not send "
                                "notifications about new builds")
+        dataIO.save_json('data/guildwars2/settings.json', self.settings)
+
+    @checks.is_owner()
+    @gamebuild.command()
+    async def globaltoggle(self, on_off: bool = None):
+        """Toggles checking for new builds, globally.
+        Note that in order to receive notifications you to
+        set up notification channel and enable it per server using
+        [p]gamebuild toggle
+        Off by default.
+        """
+        if on_off is not None:
+            self.settings["ENABLED"] = on_off
+        if self.settings["ENABLED"]:
+            await self.update_build()
+            await self.bot.say("Build checking is enabled. "
+                               "You still need to enable it per server.")
+        else:
+            await self.bot.say("Build checking is globally disabled")
+        dataIO.save_json('data/guildwars2/settings.json', self.settings)
 
     @commands.group(pass_context=True)
     async def tp(self, ctx):
         """Commands related to tradingpost
         Requires no additional scopes"""
         if ctx.invoked_subcommand is None:
-            await self.bot.send_cmd_help(ctx)
+            await send_cmd_help(ctx)
 
-    @commands.cooldown(1, 10, BucketType.user)
-    @tp.command(pass_context=True, name="current")
-    async def tp_current(self, ctx, buys_sells):
+    @tp.command(pass_context=True)
+    async def current(self, ctx, buys_sells):
         """Show current selling/buying transactions
         invoke with sells or buys"""
         user = ctx.message.author
         color = self.getColor(user)
         state = buys_sells.lower()
         scopes = ["tradingpost"]
-        endpoint = "commerce/transactions/current/{0}".format(state)
-        keydoc = await self.fetch_key(user)
         if state == "buys" or state == "sells":
             try:
-                await self._check_scopes_(ctx, user, scopes)
-                key = keydoc["key"]
-                headers = self.construct_headers(key)
-                accountname = keydoc["account_name"]
-                results = await self.call_api(endpoint, headers)
+                self._check_scopes_(user, scopes)
+                key = self.keylist[user.id]["key"]
+                accountname = self.keylist[user.id]["account_name"]
+                endpoint = "commerce/transactions/current/{1}?access_token={0}".format(key, state)
+                results = await self.call_api(endpoint)
             except APIKeyError as e:
                 await self.bot.say(e)
                 return
@@ -1269,19 +1298,18 @@ class GuildWars2:
         else:
             await self.bot.say("{0.mention}, Please us either 'sells' or 'buys' as parameter".format(user))
             return
+
         data = discord.Embed(description='Current ' + state, colour=color)
         data.set_author(name='Transaction overview of {0}'.format(accountname))
         data.set_thumbnail(
             url="https://wiki.guildwars2.com/images/thumb/d/df/Black-Lion-Logo.png/300px-Black-Lion-Logo.png")
         data.set_footer(text="Black Lion Trading Company")
-        results = results[:20]  # Only display 20 most recent transactions
+
+        results = results[:20] # Only display 20 most recent transactions
         item_id = ""
         dup_item = {}
-        itemlist = []
         # Collect listed items
         for result in results:
-            itemdoc = await self.fetch_item(result["item_id"])
-            itemlist.append(itemdoc)
             item_id += str(result["item_id"]) + ","
             if result["item_id"] not in dup_item:
                 dup_item[result["item_id"]] = len(dup_item)
@@ -1290,6 +1318,7 @@ class GuildWars2:
         endpoint_listing = "commerce/listings?ids={0}".format(str(item_id))
         # Call API once for all items
         try:
+            itemlist = await self.call_api(endpoint_items)
             listings = await self.call_api(endpoint_listing)
         except APIError as e:
             await self.bot.say("{0.mention}, API has responded with the following error: "
@@ -1304,346 +1333,26 @@ class GuildWars2:
             offers = listings[index][state]
             max_price = offers[0]["unit_price"]
             data.add_field(name=item_name, value=str(quantity) + " x " + self.gold_to_coins(price)
-                           + " | Max. offer: " + self.gold_to_coins(max_price), inline=False)
+                + " | Max. offer: " + self.gold_to_coins(max_price), inline=False)
         try:
             await self.bot.say(embed=data)
         except discord.HTTPException:
             await self.bot.say("Need permission to embed links")
 
-    @commands.cooldown(1, 15, BucketType.user)
-    @commands.command(pass_context=True)
-    async def search(self, ctx, *, item):
-        """Find items on your account!"""
-        user = ctx.message.author
-        scopes = ["inventories", "characters"]
-        keydoc = await self.fetch_key(user)
-        try:
-            await self._check_scopes_(ctx, user, scopes)
-            key = keydoc["key"]
-            headers = self.construct_headers(key)
-            endpoint_bank = "account/bank"
-            endpoint_shared = "account/inventory"
-            endpoint_char = "characters?page=0"
-            endpoint_material = "account/materials"
-            bank = await self.call_api(endpoint_bank, headers)
-            shared = await self.call_api(endpoint_shared, headers)
-            material = await self.call_api(endpoint_material, headers)
-            characters = await self.call_api(endpoint_char, headers)
-        except APIKeyError as e:
-            await self.bot.say(e)
-            return
-        except APIError as e:
-            await self.bot.say("{0.mention}, API has responded with the following error: "
-                               "`{1}`".format(user, e))
-            return
-        search = re.compile(item + ".*", re.IGNORECASE)
-        cursor = self.db.items.find({"name": search})
-        number = await cursor.count()
-        if not number:
-            await self.bot.say("Your search gave me no results, sorry. Check for typos.")
-            return
-        if number > 20:
-            await self.bot.say("Your search gave me {0} item results. Please be more specific".format(number))
-            return
-        items = []
-        msg = "Which one of these interests you? Type it's number```"
-        async for item in cursor:
-            items.append(item)
-        if number != 1:
-            for c, m in enumerate(items):
-                msg += "\n{}: {} ({})".format(c, m["name"], m["rarity"])
-            msg += "```"
-            message = await self.bot.say(msg)
-            answer = await self.bot.wait_for_message(timeout=120, author=user)
-            try:
-                num = int(answer.content)
-                choice = items[num]
-            except:
-                await self.bot.edit_message(message, "That's not a number in the list")
-                return
-            try:
-                await self.bot.delete_message(answer)
-            except:
-                pass
-        else:
-            message = await self.bot.say("Searching far and wide...")
-            choice = items[0]
-        output = ""
-        await self.bot.edit_message(message, "Searching far and wide...")
-        results = {"bank" : 0, "shared" : 0, "material" : 0, "characters" : {}}
-        bankresults = [item["count"] for item in bank if item != None and item["id"] == choice["_id"]]
-        results["bank"] = sum(bankresults)
-        sharedresults = [item["count"] for item in shared if item != None and item["id"] == choice["_id"]]
-        results["shared"] = sum(sharedresults)
-        materialresults = [item["count"] for item in material if item != None and item["id"] == choice["_id"]]
-        results["material"] = sum(materialresults)
-        for character in characters:
-            results["characters"][character["name"]] = 0
-            bags = [bag for bag in character["bags"] if bag != None]
-            for bag in bags:
-                inv = [item["count"] for item in bag["inventory"] if item != None and item["id"] == choice["_id"]]
-                results["characters"][character["name"]] += sum(inv)
-        if results["bank"]:
-            output += "BANK: Found {0}\n".format(results["bank"])
-        if results["material"]:
-            output += "MATERIAL STORAGE: Found {0}\n".format(results["material"])
-        if results["shared"]:
-            output += "SHARED: Found {0}\n".format(results["shared"])
-        if results["characters"]:
-            for char, value in results["characters"].items():
-                if value:
-                    output += "{0}: Found {1}\n".format(char.upper(), value)
-        if not output:
-            await self.bot.edit_message(message, "Sorry, nothing found")
-        else:
-            await self.bot.edit_message(message, "```" + output + "```")
-
-    @commands.cooldown(1, 5, BucketType.user)
-    @commands.command(pass_context=True)
-    async def skillinfo(self, ctx, *, skill):
-        """Information about a given skill"""
-        user = ctx.message.author
-        search = re.compile(skill + ".*", re.IGNORECASE)
-        cursor = self.db.skills.find({"name": search})
-        number = await cursor.count()
-        if not number:
-            await self.bot.say("Your search gave me no results, sorry. Check for typos.")
-            return
-        if number > 20:
-            await self.bot.say("Your search gave me {0} results. Please be more specific".format(number))
-            return
-        items = []
-        msg = "Which one of these interests you? Type it's number```"
-        async for item in cursor:
-            items.append(item)
-        if number != 1:
-            for c, m in enumerate(items):
-                msg += "\n{}: {}".format(c, m["name"])
-            msg += "```"
-            message = await self.bot.say(msg)
-            answer = await self.bot.wait_for_message(timeout=120, author=user)
-            output = ""
-            try:
-                num = int(answer.content)
-                choice = items[num]
-            except:
-                await self.bot.edit_message(message, "That's not a number in the list")
-                return
-            try:
-                await self.bot.delete_message(answer)
-            except:
-                pass
-        else:
-            message = await self.bot.say("Searching far and wide...")
-            choice = items[0]
-        data = self.skill_embed(choice)
-        try:
-            await self.bot.edit_message(message, new_content=" ", embed=data)
-        except discord.HTTPException:
-            await self.bot.say("Need permission to embed links")
-
-
-    def skill_embed(self, skill):
-        #Very inconsistent endpoint, playing it safe
-        description = None
-        if "description" in skill:
-            description = skill["description"]
-        data = discord.Embed(title=skill["name"], description=description)
-        if "icon" in skill:
-            data.set_thumbnail(url=skill["icon"])
-        if "professions" in skill:
-            if skill["professions"]:
-                professions = skill["professions"]
-                if len(professions) != 1:
-                    data.add_field(name="Professions", value=", ".join(professions))
-                elif len(professions) == 9:
-                    data.add_field(name="Professions", value="All")
-                else:
-                    data.add_field(name="Profession", value=", ".join(professions))
-        if "facts" in skill:
-            for fact in skill["facts"]:
-                try:
-                    if fact["type"] == "Recharge":
-                        data.add_field(name="Cooldown", value=fact["value"])
-                    if fact["type"] == "Distance" or fact["type"] == "Number":
-                        data.add_field(name=fact["text"], value=fact["value"])
-                    if fact["type"] == "ComboField":
-                        data.add_field(name=fact["text"], value=fact["field_type"])
-                except:
-                    pass
-        return data
-
-    @commands.group(pass_context=True)
-    @checks.is_owner()
-    async def database(self, ctx):
-        """Commands related to DB management"""
-        if ctx.invoked_subcommand is None:
-            await self.bot.send_cmd_help(ctx)
-            return
-
-    @database.command(pass_context=True, name="create")
-    async def db_create(self, ctx):
-        """Create a new database
-        """
-        await self.rebuild_database()
-
-    async def rebuild_database(self):
-        # Needs a lot of cleanup, but works anyway.
-        start = time.time()
-        await self.db.items.drop()
-        await self.db.itemstats.drop()
-        await self.db.achievements.drop()
-        await self.db.titles.drop()
-        await self.db.recipes.drop()
-        await self.db.skins.drop()
-        await self.db.currencies.drop()
-        await self.db.skills.drop()
-        self.bot.building_database = True
-        try:
-            items = await self.call_api("items")
-        except Exception as e:
-            print(e)
-        await self.db.items.create_index("name")
-        counter = 0
-        done = False
-        total = len(items)
-        while not done:
-            percentage = (counter / total) * 100
-            print("Progress: {0:.1f}%".format(percentage))
-            ids = ",".join(str(x) for x in items[counter:(counter + 200)])
-            if not ids:
-                done = True
-                print("Done with items, moving to achievements")
-                break
-            itemgroup = await self.call_api("items?ids={0}".format(ids))
-            counter += 200
-            for item in itemgroup:
-                item["_id"] = item["id"]
-            await self.db.items.insert_many(itemgroup)
-        try:
-            items = await self.call_api("achievements")
-        except Exception as e:
-            print(e)
-        await self.db.achievements.create_index("name")
-        counter = 0
-        done = False
-        total = len(items)
-        while not done:
-            percentage = (counter / total) * 100
-            print("Progress: {0:.1f}%".format(percentage))
-            ids = ",".join(str(x) for x in items[counter:(counter + 200)])
-            if not ids:
-                done = True
-                print("Done with achievements, moving to itemstats")
-                break
-            itemgroup = await self.call_api("achievements?ids={0}".format(ids))
-            counter += 200
-            for item in itemgroup:
-                item["_id"] = item["id"]
-            await self.db.achievements.insert_many(itemgroup)
-        try:
-            items = await self.call_api("itemstats")
-        except Exception as e:
-            print(e)
-        counter = 0
-        done = False
-        itemgroup = await self.call_api("itemstats?ids=all")
-        for item in itemgroup:
-            item["_id"] = item["id"]
-        await self.db.itemstats.insert_many(itemgroup)
-        print("Itemstats complete. Moving to titles")
-        counter = 0
-        done = False
-        await self.db.titles.create_index("name")
-        itemgroup = await self.call_api("titles?ids=all")
-        for item in itemgroup:
-            item["_id"] = item["id"]
-        await self.db.titles.insert_many(itemgroup)
-        print("Titles done!")
-        try:
-            items = await self.call_api("recipes")
-        except Exception as e:
-            print(e)
-        await self.db.recipes.create_index("output_item_id")
-        counter = 0
-        done = False
-        total = len(items)
-        while not done:
-            percentage = (counter / total) * 100
-            print("Progress: {0:.1f}%".format(percentage))
-            ids = ",".join(str(x) for x in items[counter:(counter + 200)])
-            if not ids:
-                done = True
-                print("Done with recioes")
-                break
-            itemgroup = await self.call_api("recipes?ids={0}".format(ids))
-            counter += 200
-            for item in itemgroup:
-                item["_id"] = item["id"]
-            await self.db.recipes.insert_many(itemgroup)
-        try:
-            items = await self.call_api("skins")
-        except Exception as e:
-            print(e)
-        await self.db.skins.create_index("name")
-        counter = 0
-        done = False
-        total = len(items)
-        while not done:
-            percentage = (counter / total) * 100
-            print("Progress: {0:.1f}%".format(percentage))
-            ids = ",".join(str(x) for x in items[counter:(counter + 200)])
-            if not ids:
-                done = True
-                print("Done with skins")
-                break
-            itemgroup = await self.call_api("skins?ids={0}".format(ids))
-            counter += 200
-            for item in itemgroup:
-                item["_id"] = item["id"]
-            await self.db.skins.insert_many(itemgroup)
-        counter = 0
-        done = False
-        await self.db.currencies.create_index("name")
-        itemgroup = await self.call_api("currencies?ids=all")
-        for item in itemgroup:
-            item["_id"] = item["id"]
-        await self.db.currencies.insert_many(itemgroup)
-        end = time.time()
-        counter = 0
-        done = False
-        await self.db.skills.create_index("name")
-        itemgroup = await self.call_api("skills?ids=all")
-        for item in itemgroup:
-            item["_id"] = item["id"]
-        await self.db.skills.insert_many(itemgroup)
-        end = time.time()
-        self.bot.building_database = False
-        print("Database done! Time elapsed: {0} seconds".format(end - start))
 
     async def _gamebuild_checker(self):
         while self is self.bot.get_cog("GuildWars2"):
-            try:
+            if self.settings["ENABLED"]:
                 if await self.update_build():
-                    channels = await self.get_channels()
+                    channels = self.get_channels()
                     if channels:
                         for channel in channels:
-                            try:
-                                await self.bot.send_message(self.bot.get_channel(channel),
-                                                            "@here Guild Wars 2 has just updated! New build: "
-                                                            "`{0}`".format(self.build["id"]))
-                            except:
-                                pass
+                            await self.bot.send_message(self.bot.get_channel(channel),
+                                                        "@here Guild Wars 2 has just updated! New build: "
+                                                        "`{0}`".format(self.build["id"]))
                     else:
-                        print(
-                            "A new build was found, but no channels to notify were found. Maybe error?")
-                    await self.rebuild_database(    )
-                await asyncio.sleep(60)
-            except Exception as e:
-                print(
-                    "Update ontifier has encountered an exception: {0}\nExecution will continue".format(e))
-                await asyncio.sleep(60)
-                continue
+                        print ("A new build was found, but no channels to notify were found. Maybe error?")
+            await asyncio.sleep(60)
 
     def gold_to_coins(self, money):
         gold, remainder = divmod(money, 10000)
@@ -1656,20 +1365,15 @@ class GuildWars2:
         else:
             return "{0} gold, {1} silver and {2} copper".format(gold, silver, copper)
 
-    def handle_duplicates(self, upgrades):
-        formatted_list = []
-        for x in upgrades:
-            if upgrades.count(x) != 1:
-                formatted_list.append(x + " x" + str(upgrades.count(x)))
-                upgrades[:] = [i for i in upgrades if i != x]
-            else:
-                formatted_list.append(x)
-        return formatted_list
 
-    def construct_headers(self, key):
-        headers = {"Authorization": "Bearer {0}".format(key)}
-        headers.update(DEFAULT_HEADERS)
-        return headers
+    def getlanguage(self, ctx):
+        server = ctx.message.server
+
+        with open('data/guildwars2/language.json') as langfile:
+            data = json.load(langfile)
+        # Direct messages to bot defaults to english
+        return data[server.id]["language"] if server != None and server.id in data else "en"
+
 
     async def getworldid(self, world):
         if world is None:
@@ -1692,30 +1396,25 @@ class GuildWars2:
             return None
         return results
 
-    async def _get_title_(self, tid):
+    async def _get_title_(self, tid, ctx):
+        language = self.getlanguage(ctx)
+        endpoint = "titles/{0}?lang={1}".format(tid,language)
         try:
-            results = await self.db.titles.find_one({"_id" : tid})
-            title = results["name"]
-        except:
-            return ""
+            results = await self.call_api(endpoint)
+        except APIError:
+            return None
+        title = results["name"]
         return title
 
-    async def call_api(self, endpoint, headers=DEFAULT_HEADERS):
+    async def call_api(self, endpoint):
         apiserv = 'https://api.guildwars2.com/v2/'
         url = apiserv + endpoint
-        async with self.session.get(url, headers=headers) as r:
-            if r.status != 200 and r.status != 206:
-                if r.status == 404:
-                    raise APINotFound()
-                if r.status == 403:
-                    raise APIConnectionError("Access denied")
-                if r.status == 429:
-                    print (time.strftime('%a %H:%M:%S'), "Api call limit reached")
-                    raise APIConnectionError(
-                        "Requests limit has been achieved. Try again later.")
-                else:
-                    raise APIConnectionError(str(r.status))
+        async with self.session.get(url) as r:
             results = await r.json()
+        if "error" in results:
+            raise APIError("The API is dead!")
+        if "text" in results:
+            raise APIError(results["text"])
         return results
 
     def get_age(self, age):
@@ -1726,14 +1425,48 @@ class GuildWars2:
             fmt = '{d} days, {h} hours, {m} minutes, and {s} seconds'
         else:
             fmt = '{h} hours, {m} minutes, and {s} seconds'
+
         return fmt.format(d=days, h=hours, m=minutes, s=seconds)
 
-    async def fetch_statname(self, item):
-        statset = await self.db.itemstats.find_one({"_id": item})
-        return statset["name"]
+    async def _get_item_name_(self, items, ctx):
+        language = self.getlanguage(ctx)
+        name = []
+        if isinstance(items, int):
+            endpoint = "items/{0}?lang={1}".format(items, language)
+            try:
+                results = await self.call_api(endpoint)
+            except APIError:
+                return None
+            name.append(results["name"])
+        else:
+            for x in items:
+                endpoint = "items/{0}?lang={1}".format(x, language)
+                try:
+                    results = await self.call_api(endpoint)
+                except APIError:
+                    return None
+                name.append(results["name"])
+        name = ", ".join(name)
+        return name
 
-    async def fetch_item(self, item):
-        return await self.db.items.find_one({"_id": item})
+    async def _getstats_(self, item):
+        endpoint = "items/{0}".format(item)
+        try:
+            results = await self.call_api(endpoint)
+        except APIError:
+            return None
+        name = results["details"]["infix_upgrade"]["id"]
+        return name
+
+    async def _getstatname_(self, item, ctx):
+        language = self.getlanguage(ctx)
+        endpoint = "itemstats/{0}?lang={1}".format(item, language)
+        try:
+            results = await self.call_api(endpoint)
+        except APIError:
+            return None
+        name = results["name"]
+        return name
 
     def getColor(self, user):
         try:
@@ -1742,24 +1475,20 @@ class GuildWars2:
             color = discord.Embed.Empty
         return color
 
-    async def get_channels(self):
+    def get_channels(self):
         try:
             channels = []
-            cursor = self.db.settings.find(modifiers={"$snapshot": True})
-            async for server in cursor:
-                try:
-                    if server["on"]:
-                        channels.append(server["channel"])
-                except:
-                    pass
+            for server in self.settings:
+                if not server == "ENABLED": #Ugly I know
+                    if self.settings[server]["ON"]:
+                        channels.append(self.settings[server]["CHANNEL"])
             return channels
         except:
             return None
 
-    async def get_announcement_channel(self, server):
+    def get_announcement_channel(self, server):
         try:
-            serverdoc = await self.fetch_server(server)
-            return server.get_channel(serverdoc["channel"])
+            return server.get_channel(self.settings[server.id]["CHANNEL"])
         except:
             return None
 
@@ -1777,26 +1506,22 @@ class GuildWars2:
         else:
             return False
 
-    async def _check_scopes_(self, ctx, user, scopes):
-        keydoc = await self.fetch_key(user)
-        if not keydoc:
+    def _check_scopes_(self, user, scopes):
+        if user.id not in self.keylist:
             raise APIKeyError(
-                "No API key associated with {0.mention}. Add your key using `{1}key add` command.".format(user, ctx.prefix))
+                "No API key associated with {0.mention}".format(user))
         if scopes:
             missing = []
             for scope in scopes:
-                if scope not in keydoc["permissions"]:
+                if scope not in self.keylist[user.id]["permissions"]:
                     missing.append(scope)
             if missing:
                 missing = ", ".join(missing)
                 raise APIKeyError(
                     "{0.mention}, missing the following scopes to use this command: `{1}`".format(user, missing))
 
-    async def fetch_key(self, user):
-        return await self.db.keys.find_one({"_id": user.id})
-
-    async def fetch_server(self, server):
-        return await self.db.settings.find_one({"_id": server.id})
+    def save_keys(self):
+        dataIO.save_json('data/guildwars2/keys.json', self.keylist)
 
 
 def check_folders():
@@ -1808,6 +1533,9 @@ def check_folders():
 def check_files():
     files = {
         "gamedata.json": {},
+        "settings.json": {"ENABLED": False},
+        "language.json": {},
+        "keys.json": {},
         "build.json": {"id": None}  # Yay legacy support
     }
 
